@@ -4,4 +4,4 @@ __pycache__/
 .env
 staticfiles/
 error.txt
-db.sqlite3
+db.sqlite3 

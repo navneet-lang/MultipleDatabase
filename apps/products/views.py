@@ -123,7 +123,7 @@ class ProductDetailView(APIView):
             return Response({"detail": "Product not found."}, status=404)
         return Response(serialize_product(product))
 
-    def put(self, request, pk):
+    def patch(self, request, pk):
         db = get_mongo_db()
         product = self._get_product_or_404(db, pk)
         if product is None:
@@ -143,6 +143,37 @@ class ProductDetailView(APIView):
 
         if update_data:
             db.products.update_one({"_id": product["_id"]}, {"$set": update_data})
+
+        updated_product = db.products.find_one({"_id": product["_id"]})
+        return Response(serialize_product(updated_product))
+
+
+    def put(self, request, pk):
+        db = get_mongo_db()
+        product = self._get_product_or_404(db, pk)
+        if product is None:
+            return Response({"detail": "Product not found."}, status=404)
+
+        if not self._check_ownership(request, product):
+            return Response(
+                {"detail": "You do not have permission to edit this product."}, status=403
+            )
+
+        # PUT = poori resource replace karo, isliye saari required fields chahiye
+        serializer = ProductSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        update_data = {
+            "name": data["name"],
+            "description": data.get("description", ""),
+            "price": float(data["price"]),
+            "category": data["category"],
+            "stock": data.get("stock", 0),
+            "extra_fields": data.get("extra_fields", {}),
+        }
+
+        db.products.update_one({"_id": product["_id"]}, {"$set": update_data})
 
         updated_product = db.products.find_one({"_id": product["_id"]})
         return Response(serialize_product(updated_product))

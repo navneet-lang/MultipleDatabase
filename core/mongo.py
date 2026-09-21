@@ -21,3 +21,4 @@ def get_mongo_db() -> Database:
      client = get_mongo_client()
      return client[settings.MONGO_DB_NAME]
      
+       
