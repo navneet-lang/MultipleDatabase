@@ -1,12 +1,12 @@
 """
-aapps/products/serializers.py
+apps/products/serializers.py
 
-Plain DRF Serializer - koi Django Model nahi hai (Mongo mein data hai),
-isliye ModelSerializer use nahi kar rahe , sife validation ke liye.
-
+Plain DRF Serializer — koi Django Model nahi hai (Mongo mein data hai),
+isliye ModelSerializer use nahi kar rahe, sirf validation ke liye.
 """
 
 from rest_framework import serializers
+
 
 class ProductSerializer(serializers.Serializer):
     name = serializers.CharField(max_length=255)
@@ -16,10 +16,9 @@ class ProductSerializer(serializers.Serializer):
     stock = serializers.IntegerField(min_value=0, default=0)
     shop_id = serializers.IntegerField()
 
-       # Category ke hisaab se extra fields flexible rakhne ke liye
-        # (jaise size/color kapdo mein, warranty electronics mein)
+    # Category ke hisaab se extra fields flexible rakhne ke liye
+    # (jaise size/color kapdo mein, warranty electronics mein)
     extra_fields = serializers.DictField(required=False, default=dict)
-
 
 
 class ProductUpdateSerializer(serializers.Serializer):
@@ -28,10 +27,13 @@ class ProductUpdateSerializer(serializers.Serializer):
     """
 
     name = serializers.CharField(max_length=255, required=False)
-    description = serializers.CharField(required=False, allow_blank= True)
-    price= serializers.DecimalField(max_digits=10, decimal_places=2, min_value=0, required=False)
-    categrory= serializers.CharField(max_length=100, required=False)
-    stock = serializers.IntegerField(min_value=0, required= False)
-    extra_fields = serializers.DictField(required= False) 
+    description = serializers.CharField(required=False, allow_blank=True)
+    price = serializers.DecimalField(max_digits=10, decimal_places=2, min_value=0, required=False)
+    category = serializers.CharField(max_length=100, required=False)
+    stock = serializers.IntegerField(min_value=0, required=False)
+    extra_fields = serializers.DictField(required=False)
 
 
+class ReviewSerializer(serializers.Serializer):
+    rating = serializers.IntegerField(min_value=1, max_value=5)
+    comment = serializers.CharField(max_length=1000, required=False, allow_blank=True, default="")

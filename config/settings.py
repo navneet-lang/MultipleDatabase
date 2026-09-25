@@ -4,7 +4,6 @@ config/settings.py
 Production-style settings — sab kuch env-driven (python-decouple se),
 taaki dev/prod ke beech koi code change na karna pade, sirf .env badlo.
 """
-
 from datetime import timedelta
 from pathlib import Path
 
@@ -12,15 +11,15 @@ from decouple import Csv, config
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
+SECRET_KEY = config("SECRET_KEY", default="django-insecure-super-secret-key-123")
+DEBUG = config("DEBUG", default=True, cast=bool)
+ALLOWED_HOSTS = config("ALLOWED_HOSTS", default="*", cast=Csv())
+
 # ----------------------------------------------------------------------
 # Core
 # ----------------------------------------------------------------------
-SECRET_KEY = config("DJANGO_SECRET_KEY", default="unsafe-dev-key-change-me")
-DEBUG = config("DJANGO_DEBUG", default=True, cast=bool)
-ALLOWED_HOSTS = config("DJANGO_ALLOWED_HOSTS", default="localhost,127.0.0.1", cast=Csv())
-
 INSTALLED_APPS = [
-    "django.contrib.sites",  
+    "django.contrib.sites",
     "django.contrib.admin",
     "django.contrib.auth",
     "django.contrib.contenttypes",
@@ -35,12 +34,12 @@ INSTALLED_APPS = [
     "allauth.account",
     "allauth.socialaccount",
     "allauth.socialaccount.providers.google",
-    
     # local apps
-      "apps.users",
-       "apps.shops",
-       "apps.products",
-       "apps.cart", 
+    "apps.users",
+    "apps.shops",
+    "apps.products",
+    "apps.cart",
+    "apps.orders",
 ]
 
 MIDDLEWARE = [
@@ -116,7 +115,7 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 AUTH_USER_MODEL = "users.User"
 
 # ----------------------------------------------------------------------
-# DRF + SimpleJWT — CookieJWTAuthentication yahi wire ho raha hai
+# DRF + SimpleJWT — CookieJWTAuthentication
 # ----------------------------------------------------------------------
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": [
@@ -136,7 +135,7 @@ SIMPLE_JWT = {
 }
 
 # ----------------------------------------------------------------------
-# Cookie names/config — core/cookies.py inhi ko read karta hai
+# Cookie names/config
 # ----------------------------------------------------------------------
 AUTH_ACCESS_COOKIE_NAME = config("AUTH_ACCESS_COOKIE_NAME", default="access_token")
 AUTH_REFRESH_COOKIE_NAME = config("AUTH_REFRESH_COOKIE_NAME", default="refresh_token")
@@ -145,14 +144,12 @@ AUTH_COOKIE_SAMESITE = config("AUTH_COOKIE_SAMESITE", default="Lax")
 AUTH_REFRESH_COOKIE_PATH = "/api/auth/refresh/"
 
 # ----------------------------------------------------------------------
-# CORS — frontend origin allow karo (agar cookie-based auth hai to
-# CORS_ALLOW_CREDENTIALS = True zaroori hai)
+# CORS
 # ----------------------------------------------------------------------
 CORS_ALLOWED_ORIGINS = config(
     "CORS_ALLOWED_ORIGINS", default="http://localhost:3000", cast=Csv()
 )
 CORS_ALLOW_CREDENTIALS = True
-
 
 SITE_ID = 1
 
@@ -168,10 +165,28 @@ SOCIALACCOUNT_PROVIDERS = {
     }
 }
 
-LOGIN_REDIRECT_URL = "/"  
-
-
-
+LOGIN_REDIRECT_URL = "/"
 
 GOOGLE_CLIENT_ID = config("GOOGLE_CLIENT_ID", default="")
 GOOGLE_CLIENT_SECRET = config("GOOGLE_CLIENT_SECRET", default="")
+
+# ----------------------------------------------------------------------
+# Email Configuration (SMTP / Real Gmail via SSL)
+# ----------------------------------------------------------------------
+EMAIL_BACKEND = "django.core.mail.backends.smtp.EmailBackend"
+EMAIL_HOST = "smtp.gmail.com"
+EMAIL_PORT = 465
+EMAIL_USE_TLS = False
+EMAIL_USE_SSL = True
+EMAIL_HOST_USER = config("EMAIL_HOST_USER", default="")
+EMAIL_HOST_PASSWORD = config("EMAIL_HOST_PASSWORD", default="")
+DEFAULT_FROM_EMAIL = config("DEFAULT_FROM_EMAIL", default=EMAIL_HOST_USER)
+# ----------------------------------------------------------------------
+# Celery — Redis broker background tasks
+# ----------------------------------------------------------------------
+CELERY_BROKER_URL = config("CELERY_BROKER_URL", default="redis://redis:6379/0")
+CELERY_RESULT_BACKEND = config("CELERY_RESULT_BACKEND", default="redis://redis:6379/0")
+CELERY_ACCEPT_CONTENT = ["json"]
+CELERY_TASK_SERIALIZER = "json"
+CELERY_RESULT_SERIALIZER = "json"
+CELERY_TIMEZONE = TIME_ZONE 

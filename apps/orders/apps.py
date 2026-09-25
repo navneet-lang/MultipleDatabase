@@ -1,6 +1,6 @@
 from django.apps import AppConfig
 
 
-class CartConfig(AppConfig):
+class OrdersConfig(AppConfig):
     default_auto_field = "django.db.models.BigAutoField"
-    name = "apps.cart"  
+    name = "apps.orders"

@@ -36,8 +36,7 @@ class CheckoutView(APIView):
 
         db = get_mongo_db()
 
-        # Step 1: Saare products fetch karo aur stock verify karo — order
-        # banane se PEHLE, taaki beech mein fail hone se bacha jaye.
+        # Step 1: Saare products fetch karo aur stock verify karo
         line_items = []
         for cart_item in cart_items:
             try:
@@ -77,7 +76,7 @@ class CheckoutView(APIView):
                 }
             )
 
-        # Step 2: Order + OrderItems banao — ek transaction ke andar
+        # Step 2: Order + OrderItems create karo (atomic transaction)
         total_amount = sum(item["price"] * item["quantity"] for item in line_items)
 
         with transaction.atomic():
@@ -93,16 +92,14 @@ class CheckoutView(APIView):
                 )
             cart_items.delete()
 
-        # Step 3: Mongo mein stock kam karo (transaction ke BAHAR — for loop
-        # transaction se bahar hona chahiye, warna sirf ek item pe hi return
-        # ho jaata tha pehle)
+        # Step 3: Mongo mein stock update karo
         for item in line_items:
             db.products.update_one(
                 {"_id": item["object_id"]},
                 {"$inc": {"stock": -item["quantity"]}},
             )
 
-        # Step 4: Order confirmation email — background mein (Celery)
+        # Step 4: Celery background email trigger
         send_order_confirmation_email.delay(
             order.id, request.user.email, request.user.username, str(order.total_amount)
         )
@@ -113,7 +110,7 @@ class CheckoutView(APIView):
 
 class OrderListView(APIView):
     """
-    GET /api/orders/   -> apne saare orders (history)
+    GET /api/orders/   -> User order history
     """
 
     permission_classes = [IsAuthenticated]
@@ -126,8 +123,8 @@ class OrderListView(APIView):
 
 class OrderDetailView(APIView):
     """
-    GET   /api/orders/<id>/   -> ek order ki detail (khud ka, ya admin)
-    PATCH /api/orders/<id>/   -> order ka status update karna (sirf admin)
+    GET   /api/orders/<id>/   -> Single order detail
+    PATCH /api/orders/<id>/   -> Update order status (Admin only)
     """
 
     permission_classes = [IsAuthenticated]

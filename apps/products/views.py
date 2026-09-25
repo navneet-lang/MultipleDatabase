@@ -11,12 +11,15 @@ from bson.decimal128 import Decimal128
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from datetime import datetime, timezone
 
 from apps.shops.models import Shop
 from apps.products.serializers import ProductSerializer, ProductUpdateSerializer
 from core.mongo import get_mongo_db
 from core.permissions import HasRole
-
+from apps.orders.models import OrderItem
+from apps.products.serializers import ProductSerializer, ProductUpdateSerializer,ReviewSerializer
+ 
 
 def serialize_product(doc):
     """Mongo document ko JSON-safe dict mein convert karta hai."""
@@ -191,3 +194,120 @@ class ProductDetailView(APIView):
 
         db.products.delete_one({"_id": product["_id"]})
         return Response({"detail": f"Product '{product['name']}' deleted successfully."})
+
+
+class ProductReviewView(APIView):
+    """
+        GET  /api/products/<id>/reviews/   -> embedded reviews array dikhata hai
+        POST /api/products/<id>/reviews/   -> naya review add (sirf jisne khareeda ho)
+        """
+
+    permission_classes = [IsAuthenticated]
+
+
+    def get(self, request, pk):
+        db = get_mongo_db()
+        try:
+            object_id = ObjectId(pk)
+        except InvalidId:
+            return Response({"detail": "Invalid product id."}, status=400)
+
+        product = db.products.find_one({"_id": object_id}, {"reviews": 1})
+        if product is None:
+            return Response({"detail" : "product not found ."}, status=404)
+        return Response(product.get("revies", []))
+
+    def post(self, request,pk):
+        db = get_mongo_db()
+        try:
+            object_id = ObjectId(pk)
+        except InvalidId:
+            return Response({"detail":"Invalid product id."}, status=400)
+
+        product =db.products.find_one({"_id":object_id})
+        if product is None:
+            return Response({"detail":"product not found ."}, status=404)
+
+         # Sirf jisne ye product actually khareeda ho wahi review de sake
+
+        has_purchased = OrderItem.objects.filter(
+            order__user= request.user, product_id=pk
+        ).exists()
+        if not has_purchased:
+            return Response(
+                {"detail":"you can only review product you have purchased"}, status=403
+            )
+
+            # Ek user sirf ek hi baar review de sake
+        existing_reviews = product.get("reviews",[])
+        if any(r.get("user_id")== request.user.id for r in existing_reviews):
+            return Response({"detail":"You have already reviewed this product"}, status=400)
+
+        serialize = ReviewSerializer(data = request.data)
+        serialize.is_valid(raise_exception=True)
+        data = serialize.validated_data
+
+        review = {
+            "user_id": request.user.id,
+            "username":request.user.username,
+            "rating":data["rating"],
+            "comment":data.get("comment", ""),
+            "created_at":datetime.now(timezone.utc).isoformat(),
+
+        }
+         # $push — embedded array mein naya document add karta hai
+
+        db.products.update_one(
+            {"_id":object_id},
+            {"$push": {"reviews": review}},
+        )
+
+        return Response({"detail":"Review added.","review":review }, status=201)
+
+
+class ProductRatingView(APIView):
+      """
+        GET /api/products/<id>/rating/
+        Aggregation pipeline se average rating + review count nikalta hai —
+        calculation database ke andar hoti hai, Python mein loop nahi lagana padta.
+        """
+
+      permission_classes = [IsAuthenticated]
+
+      def get(self, request, pk):
+          db = get_mongo_db()
+          try:
+              object_id =ObjectId(pk)
+          except InvalidId:
+              return Response({"detail":"Invalid product id ."}, status=400)
+
+          pipeline = [
+              {"$match":{"_id":  object_id}}, # sirf ye product
+              {"$unwind":"$reviews"}, #reviews array ko flatten karo
+
+              {
+                  "$group":{
+                      "_id":"$_id",
+                      "average_rating":{"$avg": "$reviews.rating"},
+                      "review_count": {"$sum":1},          
+                  }
+              },
+              
+          ]
+
+          result = list(db.products.aggregate(pipeline))
+          if not result:
+              return Response({"average_rating" : None, "review_count":0})
+
+          return Response(
+              {
+                  "average_rating":round(result[0]["average_rating"], 2),
+                  "review_count":result[0]["review_count"],
+              }
+          )
+          
+
+      
+      
+
+    
