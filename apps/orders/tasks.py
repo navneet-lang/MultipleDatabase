@@ -28,3 +28,9 @@ def send_order_status_update_email(order_id, user_email, username, new_status):
     )
 
     send_mail(subject, message, None, [user_email], fail_silently=False)
+
+@shared_task
+def send_order_item_status_email(order_id, user_email, username, item_name,new_status):
+    subject = f"order_id"
+
+

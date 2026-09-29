@@ -2,24 +2,42 @@
 apps/products/views.py
 
 Manual pymongo CRUD — koi ORM/ODM nahi. core/mongo.py se connection
-milta hai, saare operations yahan direct MongoDB collection pe hote hain.
+milta hai, saare operations yahan direct MongoDB collection pe hote hain
+ to  ab ham isame ye add karnge like 
+ curd+search/pagination + Redis cache
 """
+import math
+import time
+from datetime import datetime, timezone
 
 from bson import ObjectId
-from bson.errors import InvalidId
 from bson.decimal128 import Decimal128
+from bson.errors import InvalidId
+from pymongo.errors import OperationFailure
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from datetime import datetime, timezone
 
+from apps.orders.models import OrderItem
+
+from apps.products.cache import(
+    get_cache_stats,
+    get_chched_product,
+    invalidate_product,
+    reset_cache_stats,
+    set_cached_product
+)
+
+from apps.products.serializers import (
+    ProductListQuerySerializer,
+    ProductSerializer,
+    ProductUpdateSerializer,
+    ReviewSerializer,
+)
 from apps.shops.models import Shop
-from apps.products.serializers import ProductSerializer, ProductUpdateSerializer
 from core.mongo import get_mongo_db
 from core.permissions import HasRole
-from apps.orders.models import OrderItem
-from apps.products.serializers import ProductSerializer, ProductUpdateSerializer,ReviewSerializer
- 
+
 
 def serialize_product(doc):
     """Mongo document ko JSON-safe dict mein convert karta hai."""
@@ -43,22 +61,65 @@ class ProductListCreateView(APIView):
     allowed_roles = ["seller", "admin"]
 
     def get(self, request):
-        db = get_mongo_db()
+        params = ProductListQuerySerializer(data=request.query_params)
+        params.is_valid(raise_exception=True)
+        p = params.validated_data
+
         query = {}
+        if p.get("shop_id") is not None:
+            query["shop_id"] = p["shop_id"]
+        if p.get("category"):
+            query["category"] = p["category"]
 
-        shop_id = request.query_params.get("shop_id")
-        if shop_id:
-            try:
-                query["shop_id"] = int(shop_id)
-            except ValueError:
-                return Response({"detail": "shop_id must be an integer."}, status=400)
+        price_filter = {}
+        if "price_min" in p:
+            price_filter["$gte"] = p["price_min"]
+        if "price_max" in p:
+            price_filter["$lte"] = p["price_max"]
+        if price_filter:
+            query["price"] = price_filter
 
-        category = request.query_params.get("category")
-        if category:
-            query["category"] = category
+        # List mein reviews array nahi bhejte (heavy hota hai)
+        projection = {"reviews": 0}
+        search_text = p.get("q", "").strip()
+        if search_text:
+            query["$text"] = {"$search": search_text}
+            projection["score"] = {"$meta": "textScore"}
 
-        products = list(db.products.find(query))
-        return Response([serialize_product(p) for p in products])
+        page, limit = p["page"], p["limit"]
+        db = get_mongo_db()
+
+        try:  
+            total = db.products.count_documents(query)
+            cursor = db.products.find(query, projection)
+            if search_text:
+                cursor = cursor.sort([("score", {"$meta": "textScore"})])  # best match pehle
+            else:
+                cursor = cursor.sort("_id", -1)  # newest pehle
+            docs = list(cursor.skip((page - 1) * limit).limit(limit))
+        except OperationFailure:
+            return Response(
+                {"detail": "Search index missing. Run: python manage.py ensure_mongo_indexes"},
+                status=503,
+            )
+
+        for doc in docs:
+            doc.pop("score", None)
+
+        return Response(
+            {
+                "count": total,
+                "page": page,
+                "limit": limit,
+                "total_pages": math.ceil(total / limit) if total else 0,
+                "results": [serialize_product(d) for d in docs],
+            }
+        )
+
+
+
+
+       
 
     def post(self, request):
         serializer = ProductSerializer(data=request.data)
@@ -97,7 +158,8 @@ class ProductListCreateView(APIView):
 class ProductDetailView(APIView):
     """
     GET    /api/products/<id>/   -> ek product ki detail
-    PUT    /api/products/<id>/   -> product update (sirf shop ka owner ya admin)
+    PATCH  /api/products/<id>/   -> kuch fields update (sirf shop ka owner ya admin)
+    PUT    /api/products/<id>/   -> poora product replace (sirf shop ka owner ya admin)
     DELETE /api/products/<id>/   -> product delete (sirf shop ka owner ya admin)
     """
 
@@ -120,12 +182,25 @@ class ProductDetailView(APIView):
         return shop.owner_id == request.user.id or is_admin
 
     def get(self, request, pk):
-        db = get_mongo_db()
-        product = self._get_product_or_404(db, pk)
-        if product is None:
-            return Response({"detail": "Product not found."}, status=404)
-        return Response(serialize_product(product))
+        started  =time.perf_counter()
 
+        if not ObjectId.is_valid(pk):
+            return Response({"detail":"product not found . "}, status=404)
+
+        if not ObjectId.is_valid(pk):
+            return Response({"detail":"product not found ."}, status=404)
+        data = get_chched_product(pk)
+        if data is not None:
+               response = Response(data)
+               response["X-cache"] = "HIT"
+     
+        else:
+            db = get_mongo_db
+            product = self.__get_product_or_404(db, pk)
+         
+
+            
+    
     def patch(self, request, pk):
         db = get_mongo_db()
         product = self._get_product_or_404(db, pk)
@@ -150,8 +225,7 @@ class ProductDetailView(APIView):
         updated_product = db.products.find_one({"_id": product["_id"]})
         return Response(serialize_product(updated_product))
 
-
-    def put(self, request, pk):
+    def put(self, request, pk):                
         db = get_mongo_db()
         product = self._get_product_or_404(db, pk)
         if product is None:
@@ -178,6 +252,7 @@ class ProductDetailView(APIView):
 
         db.products.update_one({"_id": product["_id"]}, {"$set": update_data})
 
+
         updated_product = db.products.find_one({"_id": product["_id"]})
         return Response(serialize_product(updated_product))
 
@@ -198,12 +273,11 @@ class ProductDetailView(APIView):
 
 class ProductReviewView(APIView):
     """
-        GET  /api/products/<id>/reviews/   -> embedded reviews array dikhata hai
-        POST /api/products/<id>/reviews/   -> naya review add (sirf jisne khareeda ho)
-        """
+    GET  /api/products/<id>/reviews/   -> embedded reviews array dikhata hai
+    POST /api/products/<id>/reviews/   -> naya review add (sirf jisne khareeda ho)
+    """
 
     permission_classes = [IsAuthenticated]
-
 
     def get(self, request, pk):
         db = get_mongo_db()
@@ -214,100 +288,108 @@ class ProductReviewView(APIView):
 
         product = db.products.find_one({"_id": object_id}, {"reviews": 1})
         if product is None:
-            return Response({"detail" : "product not found ."}, status=404)
-        return Response(product.get("revies", []))
+            return Response({"detail": "Product not found."}, status=404)
+        return Response(product.get("reviews", []))
 
-    def post(self, request,pk):
+    def post(self, request, pk):
         db = get_mongo_db()
         try:
             object_id = ObjectId(pk)
         except InvalidId:
-            return Response({"detail":"Invalid product id."}, status=400)
+            return Response({"detail": "Invalid product id."}, status=400)
 
-        product =db.products.find_one({"_id":object_id})
+        product = db.products.find_one({"_id": object_id})
         if product is None:
-            return Response({"detail":"product not found ."}, status=404)
+            return Response({"detail": "Product not found."}, status=404)
 
-         # Sirf jisne ye product actually khareeda ho wahi review de sake
-
+        # Sirf jisne ye product actually khareeda ho wahi review de sake
         has_purchased = OrderItem.objects.filter(
-            order__user= request.user, product_id=pk
+            order__user=request.user, product_id=pk
         ).exists()
         if not has_purchased:
             return Response(
-                {"detail":"you can only review product you have purchased"}, status=403
+                {"detail": "You can only review products you have purchased."}, status=403
             )
 
-            # Ek user sirf ek hi baar review de sake
-        existing_reviews = product.get("reviews",[])
-        if any(r.get("user_id")== request.user.id for r in existing_reviews):
-            return Response({"detail":"You have already reviewed this product"}, status=400)
+        # Ek user sirf ek hi baar review de sake
+        existing_reviews = product.get("reviews", [])
+        if any(r.get("user_id") == request.user.id for r in existing_reviews):
+            return Response({"detail": "You have already reviewed this product."}, status=400)
 
-        serialize = ReviewSerializer(data = request.data)
-        serialize.is_valid(raise_exception=True)
-        data = serialize.validated_data
+        serializer = ReviewSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
 
         review = {
             "user_id": request.user.id,
-            "username":request.user.username,
-            "rating":data["rating"],
-            "comment":data.get("comment", ""),
-            "created_at":datetime.now(timezone.utc).isoformat(),
-
+            "username": request.user.username,
+            "rating": data["rating"],
+            "comment": data.get("comment", ""),
+            "created_at": datetime.now(timezone.utc).isoformat(),
         }
-         # $push — embedded array mein naya document add karta hai
 
+        # $push — embedded array mein naya document add karta hai
         db.products.update_one(
-            {"_id":object_id},
+            {"_id": object_id},
             {"$push": {"reviews": review}},
         )
 
-        return Response({"detail":"Review added.","review":review }, status=201)
+        return Response({"detail": "Review added.", "review": review}, status=201)
 
 
 class ProductRatingView(APIView):
-      """
-        GET /api/products/<id>/rating/
-        Aggregation pipeline se average rating + review count nikalta hai —
-        calculation database ke andar hoti hai, Python mein loop nahi lagana padta.
+    """
+    GET /api/products/<id>/rating/
+    Aggregation pipeline se average rating + review count nikalta hai —
+    calculation database ke andar hoti hai, Python mein loop nahi lagana padta.
+
+    new one is a GET /api/products/<id>/rating/  -> aggregation pipeline se average rating
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, pk):
+        db = get_mongo_db()
+        try:
+            object_id = ObjectId(pk)
+        except InvalidId:
+            return Response({"detail": "Invalid product id."}, status=400)
+
+        pipeline = [
+            {"$match": {"_id": object_id}},  # sirf ye product
+            {"$unwind": "$reviews"},  # reviews array ko flatten karo
+            {
+                "$group": {
+                    "_id": "$_id",
+                    "average_rating": {"$avg": "$reviews.rating"},
+                    "review_count": {"$sum": 1},
+                }
+            },
+        ]
+
+        result = list(db.products.aggregate(pipeline))
+        if not result:
+            return Response({"average_rating": None, "review_count": 0})
+
+        return Response(
+            {
+                "average_rating": round(result[0]["average_rating"], 2),
+                "review_count": result[0]["review_count"],
+            }
+        )
+
+class ProductCacheStatsView(APIView):
         """
+    GET    /api/products/cache-stats/   -> hits, misses, hit ratio (sirf admin)
+    DELETE /api/products/cache-stats/   -> counters reset (testing ke liye)
+    """
+        permission_classes = [IsAuthenticated, HasRole]
+        allowed_roles = ["admin"]
 
-      permission_classes = [IsAuthenticated]
+        def get(self, request):
+            return Response(get_cache_stats())
 
-      def get(self, request, pk):
-          db = get_mongo_db()
-          try:
-              object_id =ObjectId(pk)
-          except InvalidId:
-              return Response({"detail":"Invalid product id ."}, status=400)
+        def delete(self, request):
+            reset_cache_stats()
+            return Response({"detail": "cache counters reset"})
 
-          pipeline = [
-              {"$match":{"_id":  object_id}}, # sirf ye product
-              {"$unwind":"$reviews"}, #reviews array ko flatten karo
-
-              {
-                  "$group":{
-                      "_id":"$_id",
-                      "average_rating":{"$avg": "$reviews.rating"},
-                      "review_count": {"$sum":1},          
-                  }
-              },
-              
-          ]
-
-          result = list(db.products.aggregate(pipeline))
-          if not result:
-              return Response({"average_rating" : None, "review_count":0})
-
-          return Response(
-              {
-                  "average_rating":round(result[0]["average_rating"], 2),
-                  "review_count":result[0]["review_count"],
-              }
-          )
-          
-
-      
-      
-
-    

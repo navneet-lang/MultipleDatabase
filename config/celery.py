@@ -13,4 +13,4 @@ app = Celery("config")
 # 2 & 3. config_from_object aur settings ki spelling theek kar di hai
 app.config_from_object("django.conf:settings", namespace="CELERY")
 
-app.autodiscover_tasks()  
+app.autodiscover_tasks()       

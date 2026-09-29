@@ -1,10 +1,7 @@
 """
 apps/orders/views.py
 
-Checkout: Cart (Postgres) + live product data (Mongo) padh ke Order
-banata hai, Mongo mein stock kam karta hai, cart clear karta hai.
-Poora Postgres wala hissa ek transaction mein hota hai — beech mein
-kuch fail ho to sab rollback ho jaayega.
+Checkout, order history, admin status update, aur seller order management.
 """
 
 from bson import ObjectId
@@ -16,9 +13,19 @@ from rest_framework.views import APIView
 
 from apps.cart.models import CartItem
 from apps.orders.models import Order, OrderItem
-from apps.orders.serializers import OrderSerializer
-from apps.orders.tasks import send_order_confirmation_email, send_order_status_update_email
+from apps.orders.serializers import OrderSerializer, SellerOrderItemSerializer
+from apps.orders.tasks import (
+    send_order_confirmation_email,
+    send_order_item_status_email,
+    send_order_status_update_email,
+)
+from apps.products.cache import invalidate_product
+from apps.shops.models import Shop
 from core.mongo import get_mongo_db
+from core.permissions import HasRole
+
+FINAL_ITEM_STATUSES = {"delivered", "cancelled"}
+SELLER_ALLOWED_STATUSES = ["confirmed", "shipped", "delivered", "cancelled"]
 
 
 class CheckoutView(APIView):
@@ -36,7 +43,7 @@ class CheckoutView(APIView):
 
         db = get_mongo_db()
 
-        # Step 1: Saare products fetch karo aur stock verify karo
+        # Step 1: products fetch + stock verify (hamesha Mongo se, cache se nahi)
         line_items = []
         for cart_item in cart_items:
             try:
@@ -76,7 +83,7 @@ class CheckoutView(APIView):
                 }
             )
 
-        # Step 2: Order + OrderItems create karo (atomic transaction)
+        # Step 2: Order + OrderItems (atomic transaction)
         total_amount = sum(item["price"] * item["quantity"] for item in line_items)
 
         with transaction.atomic():
@@ -92,14 +99,15 @@ class CheckoutView(APIView):
                 )
             cart_items.delete()
 
-        # Step 3: Mongo mein stock update karo
+        # Step 3: Mongo mein stock kam karo + cache invalidate (stock badla hai)
         for item in line_items:
             db.products.update_one(
                 {"_id": item["object_id"]},
                 {"$inc": {"stock": -item["quantity"]}},
             )
+            invalidate_product(item["product_id"])
 
-        # Step 4: Celery background email trigger
+        # Step 4: confirmation email (Celery background)
         send_order_confirmation_email.delay(
             order.id, request.user.email, request.user.username, str(order.total_amount)
         )
@@ -110,7 +118,7 @@ class CheckoutView(APIView):
 
 class OrderListView(APIView):
     """
-    GET /api/orders/   -> User order history
+    GET /api/orders/   -> user ki order history
     """
 
     permission_classes = [IsAuthenticated]
@@ -123,8 +131,8 @@ class OrderListView(APIView):
 
 class OrderDetailView(APIView):
     """
-    GET   /api/orders/<id>/   -> Single order detail
-    PATCH /api/orders/<id>/   -> Update order status (Admin only)
+    GET   /api/orders/<id>/   -> order detail (khud ka ya admin)
+    PATCH /api/orders/<id>/   -> admin: order ke non-final items ka status badlo
     """
 
     permission_classes = [IsAuthenticated]
@@ -141,9 +149,8 @@ class OrderDetailView(APIView):
                 {"detail": "You do not have permission to view this order."}, status=403
             )
 
-        serializer = OrderSerializer(order)
-        return Response(serializer.data)
-
+        return Response(OrderSerializer(order).data)
+ 
     def patch(self, request, pk):
         try:
             order = Order.objects.get(pk=pk)
@@ -155,21 +162,110 @@ class OrderDetailView(APIView):
             return Response({"detail": "Only admins can update the order status."}, status=403)
 
         new_status = request.data.get("status")
-        if not new_status:
-            return Response({"detail": "Status field is required."}, status=400)
-
         valid_statuses = [choice[0] for choice in Order.Status.choices]
         if new_status not in valid_statuses:
             return Response(
                 {"detail": f"Invalid status. Choose from: {valid_statuses}"}, status=400
             )
 
-        order.status = new_status
-        order.save()
+        if new_status == "cancelled":
+            return Response(
+                {"detail": "Cancel item-level route se karo (stock restock ke liye): "
+                           "PATCH /api/orders/seller/items/<item_id>/status/"},
+                status=400,
+            )
+
+        with transaction.atomic():
+            order.items.exclude(status__in=FINAL_ITEM_STATUSES).update(status=new_status)
+            order.recompute_status()
 
         send_order_status_update_email.delay(
-            order.id, order.user.email, order.user.username, new_status
+            order.id, order.user.email, order.user.username, order.status
+        )
+        return Response(OrderSerializer(order).data)
+
+
+class SellerOrderItemListView(APIView):
+    """
+    GET /api/orders/seller/items/            -> apni shops ke order items
+    GET /api/orders/seller/items/?status=pending  -> status se filter
+    Admin ko saare items dikhte hain.
+    """
+
+    permission_classes = [IsAuthenticated, HasRole]
+    allowed_roles = ["seller", "admin"]
+
+    def get(self, request):
+        items = OrderItem.objects.select_related("order", "order__user")
+
+        if getattr(request.user, "role", None) != "admin":
+            shop_ids = Shop.objects.filter(owner=request.user).values_list("id", flat=True)
+            items = items.filter(shop_id__in=list(shop_ids))
+
+        status_filter = request.query_params.get("status")
+        if status_filter:
+            items = items.filter(status=status_filter)
+
+        items = items.order_by("-order__created_at")
+        return Response(SellerOrderItemSerializer(items, many=True).data)
+
+
+class SellerOrderItemStatusView(APIView):
+    """
+    PATCH /api/orders/seller/items/<item_id>/status/
+    Body: {"status": "shipped"}
+    Sirf us item ki shop ka owner (ya admin) status badal sakta hai.
+    """
+
+    permission_classes = [IsAuthenticated, HasRole]
+    allowed_roles = ["seller", "admin"]
+
+    def patch(self, request, item_id):
+        try:
+            item = OrderItem.objects.select_related("order", "order__user").get(pk=item_id)
+        except OrderItem.DoesNotExist:
+            return Response({"detail": "Order item not found."}, status=404)
+
+        is_admin = getattr(request.user, "role", None) == "admin"
+        owns_shop = Shop.objects.filter(id=item.shop_id, owner=request.user).exists()
+        if not (is_admin or owns_shop):
+            return Response(
+                {"detail": "You can only update items from your own shop."}, status=403
+            )
+
+        new_status = request.data.get("status")
+        if new_status not in SELLER_ALLOWED_STATUSES:
+            return Response(
+                {"detail": f"Invalid status. Choose from: {SELLER_ALLOWED_STATUSES}"},
+                status=400,
+            )
+
+        if item.status in FINAL_ITEM_STATUSES:
+            return Response(
+                {"detail": f"Item already '{item.status}', ab change nahi ho sakta."},
+                status=400,
+            )
+
+        with transaction.atomic():
+            item.status = new_status
+            item.save(update_fields=["status"])
+            item.order.recompute_status()
+
+        # Cancel hua to stock wapas Mongo mein + cache invalidate
+        if new_status == "cancelled":
+            db = get_mongo_db()
+            db.products.update_one(
+                {"_id": ObjectId(item.product_id)},
+                {"$inc": {"stock": item.quantity}},
+            )
+            invalidate_product(item.product_id)
+
+        send_order_item_status_email.delay(
+            item.order_id,
+            item.order.user.email,
+            item.order.user.username,
+            item.name,
+            new_status,
         )
 
-        serializer = OrderSerializer(order)
-        return Response(serializer.data)
+        return Response(SellerOrderItemSerializer(item).data)
