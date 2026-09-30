@@ -32,7 +32,7 @@ class OrderSerializer(serializers.ModelSerializer):
 
 class SellerOrderItemSerializer(serializers.ModelSerializer):
     """Seller ko dikhne wala item — buyer ka username, email nahi (privacy). """
-    Order_id = serializers.IntegerField(source="order.id", read_only=True)
+    order_id = serializers.IntegerField(source="order.id", read_only=True),
     buyer_username =  serializers.CharField(source= "order.user.username", read_only=True)
     order_created_at =  serializers.DateTimeField(source= "order.created_at", read_only=True)
     line_total = serializers.SerializerMethodField()
