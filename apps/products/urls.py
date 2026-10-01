@@ -18,11 +18,11 @@ urlpatterns = [
     path("<str:pk>/reviews/", ProductReviewView.as_view(), name="product-reviews"),
     path("<str:pk>/rating/", ProductRatingView.as_view(), name="product-rating"),
     path("<str:pk>/", ProductDetailView.as_view(), name="product-detail"),
-]
+] 
 
 
 
 
         
 
-  
+   
