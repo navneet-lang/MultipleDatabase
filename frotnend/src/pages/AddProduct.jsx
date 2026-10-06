@@ -1,20 +1,22 @@
 import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import api from "../api/axios";
 
 export default function AddProduct() {
   const navigate = useNavigate();
+  const [params] = useSearchParams();
+  const shopFromUrl = params.get("shop");
+
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
-  // Aapke data structure ke hisaab se state
   const [formData, setFormData] = useState({
     name: "",
     description: "",
     price: "",
     category: "",
     stock: "",
-    shop_id: 16, // Postman data mein shop_id 16 tha, isliye default 16 rakha hai
+    shop_id: shopFromUrl || "",
   });
 
   const handleChange = (e) => {
@@ -23,28 +25,35 @@ export default function AddProduct() {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    setLoading(true);
     setError("");
 
+    if (!formData.shop_id) {
+      setError("Pehle My Shops se koi shop select karo.");
+      return;
+    }
+
+    setLoading(true);
+
     try {
-      // Backend ko number format chahiye price aur stock ke liye
       const payload = {
         ...formData,
         price: Number(formData.price),
         stock: Number(formData.stock),
         shop_id: Number(formData.shop_id),
-        extra_fields: {} // Abhi ke liye empty bhej rahe hain
+        extra_fields: {},
       };
 
-      // Product Create karne ki API (Agar endpoint '/product/CreatItem' hai toh change kar lena)
-      await api.post("/products/", payload); 
-      
-      alert("Product successfully add ho gaya!");
-      navigate("/products"); // Add hone ke baad seedha products list par bhej dega
+      await api.post("/products/", payload);
 
+      alert("Product successfully add ho gaya!");
+      navigate(`/shops/${formData.shop_id}`);
     } catch (err) {
       console.error("Product add error:", err);
-      setError("Product add karne mein dikkat aayi. Network tab check karein.");
+      const data = err.response?.data;
+      setError(
+        data?.detail ||
+          (data ? JSON.stringify(data) : "Product add karne mein dikkat aayi.")
+      );
     } finally {
       setLoading(false);
     }
@@ -53,19 +62,26 @@ export default function AddProduct() {
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col items-center py-10 px-6">
       <div className="w-full max-w-lg bg-white rounded-xl shadow-md border border-slate-200 p-8">
-        <h1 className="text-2xl font-extrabold text-indigo-900 mb-6 text-center">
+        <h1 className="text-2xl font-extrabold text-indigo-900 mb-2 text-center">
           Add New Product
         </h1>
+        <p className="text-sm text-slate-500 mb-6 text-center">
+          {formData.shop_id
+            ? `Adding to shop #${formData.shop_id}`
+            : "Koi shop select nahi hai"}
+        </p>
 
         {error && (
-          <div className="mb-4 p-3 bg-red-100 text-red-600 rounded-md text-sm">
+          <div className="mb-4 p-3 bg-red-100 text-red-600 rounded-md text-sm break-words">
             {error}
           </div>
         )}
 
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
-            <label className="block text-sm font-semibold text-slate-700 mb-1">Product Name</label>
+            <label className="block text-sm font-semibold text-slate-700 mb-1">
+              Product Name
+            </label>
             <input
               type="text"
               name="name"
@@ -78,7 +94,9 @@ export default function AddProduct() {
           </div>
 
           <div>
-            <label className="block text-sm font-semibold text-slate-700 mb-1">Description</label>
+            <label className="block text-sm font-semibold text-slate-700 mb-1">
+              Description
+            </label>
             <textarea
               name="description"
               required
@@ -92,7 +110,9 @@ export default function AddProduct() {
 
           <div className="grid grid-cols-2 gap-4">
             <div>
-              <label className="block text-sm font-semibold text-slate-700 mb-1">Price (₹)</label>
+              <label className="block text-sm font-semibold text-slate-700 mb-1">
+                Price (₹)
+              </label>
               <input
                 type="number"
                 name="price"
@@ -104,7 +124,9 @@ export default function AddProduct() {
               />
             </div>
             <div>
-              <label className="block text-sm font-semibold text-slate-700 mb-1">Stock</label>
+              <label className="block text-sm font-semibold text-slate-700 mb-1">
+                Stock
+              </label>
               <input
                 type="number"
                 name="stock"
@@ -118,7 +140,9 @@ export default function AddProduct() {
           </div>
 
           <div>
-            <label className="block text-sm font-semibold text-slate-700 mb-1">Category</label>
+            <label className="block text-sm font-semibold text-slate-700 mb-1">
+              Category
+            </label>
             <input
               type="text"
               name="category"
@@ -131,7 +155,7 @@ export default function AddProduct() {
           </div>
 
           <button
-            type="submit"       
+            type="submit"
             disabled={loading}
             className="w-full mt-6 bg-indigo-900 text-white py-3 rounded-lg font-bold hover:bg-indigo-800 transition disabled:opacity-50"
           >
@@ -142,4 +166,3 @@ export default function AddProduct() {
     </div>
   );
 }
-

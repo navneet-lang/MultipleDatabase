@@ -1,37 +1,42 @@
 import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import { AuthProvider } from "./context/AuthContext";
 import ProtectedRoute from "./components/ProtectedRoute";
-import AddProduct from "./pages/AddProduct";
+import Layout from "./components/Layout";
 
 import Login from "./pages/Login";
 import Register from "./pages/Register";
 import Dashboard from "./pages/Dashboard";
-
-// 1. Ye import line uncomment karni hai
-import ProductCatalog from "./pages/ProductCatalog"; 
-
+import ProductCatalog from "./pages/ProductCatalog";
+import Cart from "./pages/cart";
+import AddProduct from "./pages/AddProduct";
+import MyShops from "./pages/MyShops";
+import ShopDetail from "./pages/ShopDetail";
 export default function App() {
   return (
     <BrowserRouter>
       <AuthProvider>
         <Routes>
+          {/* Public pages (navbar nahi) */}
           <Route path="/login" element={<Login />} />
           <Route path="/register" element={<Register />} />
-          <Route path="/add-product" element={<AddProduct />} />
-          
+
+          {/* Logged-in pages: navbar + login check */}
           <Route
-            path="/dashboard"
             element={
               <ProtectedRoute>
-                <Dashboard />
+                <Layout />
               </ProtectedRoute>
             }
-          />
+          >
+            <Route path="/dashboard" element={<Dashboard />} />
+            <Route path="/products" element={<ProductCatalog />} />
+            <Route path="/cart" element={<Cart />} />
+            <Route path="/add-product" element={<AddProduct />} />
+            <Route path="/my-shops" element={<MyShops />} />
+            <Route path="/shops/:id" element={<ShopDetail />} />
+          </Route>
 
-          {/* 2. Ye wali Route uncomment karni hai */}
-          <Route path="/products" element={<ProductCatalog />} />
-
-          {/* Fallback Route */}
+          {/* Fallback */}
           <Route path="*" element={<Navigate to="/login" replace />} />
         </Routes>
       </AuthProvider>

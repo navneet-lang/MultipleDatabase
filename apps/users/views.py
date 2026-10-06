@@ -122,7 +122,7 @@ class LogoutView(APIView):
     Dono cookies clear kar deta hai.
     """
     permission_classes = [IsAuthenticated]
-
+ 
     def post(self, request):
         response = Response({"detail": "Logged out."})
         clear_auth_cookies(response)
