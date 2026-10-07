@@ -75,6 +75,7 @@ class OrderItem(models.Model):
     status = models.CharField(
         max_length=20, choices=Order.Status.choices, default=Order.Status.PENDING     
     )
+    address = models.TextField(blank=True, default="")
 
     @property
     def line_total(self):

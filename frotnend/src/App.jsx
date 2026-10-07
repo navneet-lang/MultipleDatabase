@@ -1,16 +1,19 @@
 import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import { AuthProvider } from "./context/AuthContext";
 import ProtectedRoute from "./components/ProtectedRoute";
+import RoleRoute from "./components/RoleRoute";
 import Layout from "./components/Layout";
 
 import Login from "./pages/Login";
 import Register from "./pages/Register";
 import Dashboard from "./pages/Dashboard";
 import ProductCatalog from "./pages/ProductCatalog";
-import Cart from "./pages/cart";
+import Cart from "./pages/Cart";
 import AddProduct from "./pages/AddProduct";
 import MyShops from "./pages/MyShops";
 import ShopDetail from "./pages/ShopDetail";
+import CreateShop from "./pages/CreateShop";
+
 export default function App() {
   return (
     <BrowserRouter>
@@ -29,11 +32,20 @@ export default function App() {
             }
           >
             <Route path="/dashboard" element={<Dashboard />} />
-            <Route path="/products" element={<ProductCatalog />} />
-            <Route path="/cart" element={<Cart />} />
-            <Route path="/add-product" element={<AddProduct />} />
-            <Route path="/my-shops" element={<MyShops />} />
-            <Route path="/shops/:id" element={<ShopDetail />} />
+
+            {/* Seller + Admin */}
+            <Route element={<RoleRoute allow={["seller", "admin"]} />}>
+              <Route path="/my-shops" element={<MyShops />} />
+              <Route path="/shops/:id" element={<ShopDetail />} />
+              <Route path="/create-shop" element={<CreateShop />} />
+              <Route path="/add-product" element={<AddProduct />} />
+            </Route>
+
+            {/* Customer + Admin */}
+            <Route element={<RoleRoute allow={["users", "admin"]} />}>
+              <Route path="/products" element={<ProductCatalog />} />
+              <Route path="/cart" element={<Cart />} />
+            </Route>
           </Route>
 
           {/* Fallback */}

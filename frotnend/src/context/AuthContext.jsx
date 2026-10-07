@@ -15,11 +15,11 @@ export function AuthProvider({ children }) {
       .finally(() => setLoading(false));
   }, []);
 
-  const login = async (username, password) => {
-    const res = await api.post("/auth/login/", { username, password });
-    setUser({ username: res.data.username, role: res.data.role });
-    return res.data;
-  };
+ const login = async (username, password) => {
+  const res = await api.post("/auth/login/", { username, password });
+  setUser(res.data);   
+  return res.data;     
+};
 
   const register = async (payload) => {
     const res = await api.post("/auth/register/", payload);

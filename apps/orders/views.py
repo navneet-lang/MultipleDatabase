@@ -4,6 +4,8 @@ apps/orders/views.py
 Checkout, order history, admin status update, aur seller order management.
 """
 
+import logging
+
 from bson import ObjectId
 from bson.decimal128 import Decimal128
 from django.db import transaction
@@ -24,6 +26,8 @@ from apps.shops.models import Shop
 from core.mongo import get_mongo_db
 from core.permissions import HasRole
 
+logger = logging.getLogger(__name__)
+
 FINAL_ITEM_STATUSES = {"delivered", "cancelled"}
 SELLER_ALLOWED_STATUSES = ["confirmed", "shipped", "delivered", "cancelled"]
 
@@ -31,7 +35,9 @@ SELLER_ALLOWED_STATUSES = ["confirmed", "shipped", "delivered", "cancelled"]
 class CheckoutView(APIView):
     """
     POST /api/orders/checkout/
+    Body: {"address": "..."}
     Cart ki saari items se ek Order banata hai.
+    Stock atomic tareeke se reserve hota hai (race condition safe).
     """
 
     permission_classes = [IsAuthenticated]
@@ -41,9 +47,13 @@ class CheckoutView(APIView):
         if not cart_items.exists():
             return Response({"detail": "Cart is empty."}, status=400)
 
+        address = (request.data.get("address") or "").strip()
+        if not address:
+            return Response({"detail": "Delivery address is required."}, status=400)
+
         db = get_mongo_db()
 
-        # Step 1: products fetch + stock verify (hamesha Mongo se, cache se nahi)
+        # Step 1: products fetch + quick stock verify (hamesha Mongo se, cache se nahi)
         line_items = []
         for cart_item in cart_items:
             try:
@@ -83,34 +93,63 @@ class CheckoutView(APIView):
                 }
             )
 
-        # Step 2: Order + OrderItems (atomic transaction)
-        total_amount = sum(item["price"] * item["quantity"] for item in line_items)
+        # Step 2: stock reserve karo (atomic: stock >= qty ho tabhi ghatega)
+        reserved = []
 
-        with transaction.atomic():
-            order = Order.objects.create(user=request.user, total_amount=total_amount)
-            for item in line_items:
-                OrderItem.objects.create(
-                    order=order,
-                    product_id=item["product_id"],
-                    shop_id=item["shop_id"],
-                    name=item["name"],
-                    price=item["price"],
-                    quantity=item["quantity"],
+        def rollback():
+            for r in reserved:
+                db.products.update_one(
+                    {"_id": r["object_id"]}, {"$inc": {"stock": r["quantity"]}}
                 )
-            cart_items.delete()
+                invalidate_product(r["product_id"])
 
-        # Step 3: Mongo mein stock kam karo + cache invalidate (stock badla hai)
         for item in line_items:
-            db.products.update_one(
-                {"_id": item["object_id"]},
+            res = db.products.update_one(
+                {"_id": item["object_id"], "stock": {"$gte": item["quantity"]}},
                 {"$inc": {"stock": -item["quantity"]}},
             )
+            if res.modified_count == 0:
+                rollback()
+                return Response(
+                    {"detail": f"'{item['name']}' ka stock ab kam hai, cart check karo."},
+                    status=400,
+                )
+            reserved.append(item)
+
+        # Step 3: Order + OrderItems (atomic transaction)
+        total_amount = sum(i["price"] * i["quantity"] for i in line_items)
+        try:
+            with transaction.atomic():
+                order = Order.objects.create(
+                    user=request.user,
+                    total_amount=total_amount,
+                    address=address,
+                )
+                for item in line_items:
+                    OrderItem.objects.create(
+                        order=order,
+                        product_id=item["product_id"],
+                        shop_id=item["shop_id"],
+                        name=item["name"],
+                        price=item["price"],
+                        quantity=item["quantity"],
+                    )
+                cart_items.delete()
+        except Exception:
+            rollback()
+            raise
+
+        # Step 4: cache invalidate (stock badla hai)
+        for item in line_items:
             invalidate_product(item["product_id"])
 
-        # Step 4: confirmation email (Celery background)
-        send_order_confirmation_email.delay(
-            order.id, request.user.email, request.user.username, str(order.total_amount)
-        )
+        # Step 5: confirmation email (Celery background) - fail ho to order na tute
+        try:
+            send_order_confirmation_email.delay(
+                order.id, request.user.email, request.user.username, str(order.total_amount)
+            )
+        except Exception:
+            logger.exception("Order confirmation email queue nahi ho paya (order %s)", order.id)
 
         serializer = OrderSerializer(order)
         return Response(serializer.data, status=201)
@@ -150,7 +189,7 @@ class OrderDetailView(APIView):
             )
 
         return Response(OrderSerializer(order).data)
- 
+
     def patch(self, request, pk):
         try:
             order = Order.objects.get(pk=pk)
@@ -179,9 +218,13 @@ class OrderDetailView(APIView):
             order.items.exclude(status__in=FINAL_ITEM_STATUSES).update(status=new_status)
             order.recompute_status()
 
-        send_order_status_update_email.delay(
-            order.id, order.user.email, order.user.username, order.status
-        )
+        try:
+            send_order_status_update_email.delay(
+                order.id, order.user.email, order.user.username, order.status
+            )
+        except Exception:
+            logger.exception("Status email queue nahi ho paya (order %s)", order.id)
+
         return Response(OrderSerializer(order).data)
 
 
@@ -260,12 +303,15 @@ class SellerOrderItemStatusView(APIView):
             )
             invalidate_product(item.product_id)
 
-        send_order_item_status_email.delay(
-            item.order_id,
-            item.order.user.email,
-            item.order.user.username,
-            item.name,
-            new_status,
-        )
+        try:
+            send_order_item_status_email.delay(
+                item.order_id,
+                item.order.user.email,
+                item.order.user.username,
+                item.name,
+                new_status,
+            )
+        except Exception:
+            logger.exception("Item status email queue nahi ho paya (item %s)", item.id)
 
         return Response(SellerOrderItemSerializer(item).data)

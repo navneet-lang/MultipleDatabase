@@ -106,6 +106,11 @@ class ProductListCreateView(APIView):
         for doc in docs:
             doc.pop("score", None)
 
+        shop_ids = {d.get("shop_id") for d in docs if d.get("shop_id") is not None}
+        shop_names = dict(Shop.objects.filter(id__in=shop_ids).values_list("id", "name"))
+        for d in docs:
+            d["shop_name"] = shop_names.get(d.get("shop_id"), "")
+
         return Response(
             {
                 "count": total,
@@ -182,22 +187,26 @@ class ProductDetailView(APIView):
         return shop.owner_id == request.user.id or is_admin
 
     def get(self, request, pk):
-        started  =time.perf_counter()
-
         if not ObjectId.is_valid(pk):
-            return Response({"detail":"product not found . "}, status=404)
+            return Response({"detail":"Product not found"}, status=404)
 
-        if not ObjectId.is_valid(pk):
-            return Response({"detail":"product not found ."}, status=404)
         data = get_chched_product(pk)
         if data is not None:
-               response = Response(data)
-               response["X-cache"] = "HIT"
-     
-        else:
-            db = get_mongo_db
-            product = self.__get_product_or_404(db, pk)
-         
+            response = Response(data)
+            response["X-Cache"] = "HIT"
+            return response
+
+        db = get_mongo_db()
+        product = self.__get_product_or_404(db,pk)
+        if product is None:
+            return Response({"detail":"Product not found"}, status=404)
+
+        data = serialize_product(product)
+        set_cached_product(pk, data)
+        response = Response(data)
+        response["X-Cache"] = "MISS"
+        return response
+        
 
             
     
@@ -221,6 +230,7 @@ class ProductDetailView(APIView):
 
         if update_data:
             db.products.update_one({"_id": product["_id"]}, {"$set": update_data})
+            invalidate_product(pk)
 
         updated_product = db.products.find_one({"_id": product["_id"]})
         return Response(serialize_product(updated_product))
@@ -251,6 +261,7 @@ class ProductDetailView(APIView):
         }
 
         db.products.update_one({"_id": product["_id"]}, {"$set": update_data})
+        invalidate_product(pk)
 
 
         updated_product = db.products.find_one({"_id": product["_id"]})
@@ -268,7 +279,9 @@ class ProductDetailView(APIView):
             )
 
         db.products.delete_one({"_id": product["_id"]})
+        invalidate_product(pk)
         return Response({"detail": f"Product '{product['name']}' deleted successfully."})
+    
 
 
 class ProductReviewView(APIView):
@@ -333,6 +346,7 @@ class ProductReviewView(APIView):
             {"_id": object_id},
             {"$push": {"reviews": review}},
         )
+        invalidate_product(pk)
 
         return Response({"detail": "Review added.", "review": review}, status=201)
 

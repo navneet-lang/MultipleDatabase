@@ -19,8 +19,11 @@ export default function Login() {
     setError("");
     setSubmitting(true);
     try {
-      await login(form.username.trim(), form.password);
-      navigate("/dashboard");
+      const data = await login(form.username.trim(), form.password);
+
+      if (data?.role === "seller") navigate("/my-shops");
+      else if (data?.role === "admin") navigate("/dashboard");
+      else navigate("/products");
     } catch (err) {
       const detail = err.response?.data?.detail;
       setError(detail || "Login failed. Check your username and password.");
@@ -28,12 +31,12 @@ export default function Login() {
       setSubmitting(false);
     }
   };
- 
+
   return (
     <AuthLayout
       eyebrow="Welcome back"
       title="Log in to your account"
-      subtitle="Enter your username and password to continue."  
+      subtitle="Enter your username and password to continue."
     >
       <form onSubmit={onSubmit} className="space-y-4">
         <FormField

@@ -37,24 +37,40 @@ export default function Navbar() {
     }
   };
 
+  const role = user?.role;
+  const home =
+    role === "seller" ? "/my-shops" : role === "admin" ? "/dashboard" : "/products";
+  const link = "text-sm font-medium text-slate-600 hover:text-indigo-900";
+
   return (
     <nav className="bg-white border-b border-slate-200 px-8 py-3 flex items-center justify-between">
-      <Link to="/products" className="text-xl font-extrabold text-indigo-900">
+      <Link to={home} className="text-xl font-extrabold text-indigo-900">
         Bazaario
       </Link>
 
       <div className="flex items-center gap-6">
-        <Link to="/products" className="text-sm font-medium text-slate-600 hover:text-indigo-900">
-          Products
-        </Link>
-        <Link to="/cart" className="text-sm font-medium text-slate-600 hover:text-indigo-900">
-          Cart
-        </Link>
-
-        {user?.role === "seller" && (
-          <Link to="/my-shops" className="text-sm font-medium text-slate-600 hover:text-indigo-900">
+        {/* Seller */}
+        {role === "seller" && (
+          <Link to="/my-shops" className={link}>
             My Shops
           </Link>
+        )}
+
+        {/* Admin */}
+        {role === "admin" && (
+          <>
+            <Link to="/dashboard" className={link}>Dashboard</Link>
+            <Link to="/my-shops" className={link}>My Shops</Link>
+            <Link to="/products" className={link}>Products</Link>
+          </>
+        )}
+
+        {/* Customer (role: "users") */}
+        {role === "users" && (
+          <>
+            <Link to="/products" className={link}>Products</Link>
+            <Link to="/cart" className={link}>Cart</Link>
+          </>
         )}
 
         {user ? (

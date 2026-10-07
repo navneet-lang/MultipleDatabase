@@ -74,10 +74,17 @@ class CartView(APIView):
                     "quantity": item.quantity,
                     "line_total": line_total,
                     "shop_id": snapshot["shop_id"],
+                    "stock": snapshot["stock"],
                 }
             )
 
-        return Response({"items": cart_data, "total": total})
+        return Response(
+            {
+                "items": cart_data,
+                "total": total,
+                "count": sum(i["quantity"] for i in cart_data),
+            }
+        )
 
     def post(self, request):
         serializer = AddToCartSerializer(data=request.data)
@@ -89,9 +96,18 @@ class CartView(APIView):
         if snapshot is None:
             return Response({"detail": "Product not found."}, status=404)
 
-        if snapshot["stock"] < data["quantity"]:
+        # Cart mein jitna pehle se hai, usse jodke stock check karo
+        existing = CartItem.objects.filter(
+            user=request.user, product_id=data["product_id"]
+        ).first()
+        already = existing.quantity if existing else 0
+
+        if snapshot["stock"] < already + data["quantity"]:
             return Response(
-                {"detail": f"Only {snapshot['stock']} units available in stock."},
+                {
+                    "detail": f"Only {snapshot['stock']} units available "
+                    f"(cart mein {already} hain)."
+                },
                 status=400,
             )
 
@@ -131,8 +147,19 @@ class CartItemDetailView(APIView):
 
         serializer = UpdateCartItemSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
+        new_qty = serializer.validated_data["quantity"]
 
-        item.quantity = serializer.validated_data["quantity"]
+        snapshot = get_product_snapshot(get_mongo_db(), item.product_id)
+        if snapshot is None:
+            return Response({"detail": "Product not found."}, status=404)
+
+        if new_qty > snapshot["stock"]:
+            return Response(
+                {"detail": f"Only {snapshot['stock']} units available in stock."},
+                status=400,
+            )
+
+        item.quantity = new_qty
         item.save()
 
         return Response({"detail": "Cart updated.", "quantity": item.quantity})
