@@ -10,6 +10,8 @@ from apps.orders.views import (
     OrderListView,
     SellerOrderItemListView,
     SellerOrderItemStatusView,
+    SellerSummaryView,
+    BuyerOrderCancelView
 )
 
 urlpatterns = [
@@ -22,4 +24,6 @@ urlpatterns = [
         name="seller-order-item-status",
     ),
     path("<int:pk>/", OrderDetailView.as_view(), name="order-detail"),
+    path("seller/summary/", SellerSummaryView.as_view()),
+path("<int:pk>/cancel/", BuyerOrderCancelView.as_view()),
 ]

@@ -27,19 +27,26 @@ class RegisterView(APIView):
     """
     POST /api/auth/register/
     Body: {"username": "...", "email": "...", "password": "...", "role": "user"}
-    `role` optional hai — default "user" rahega.
+    `role` optional hai, default customer. "admin" kabhi allow nahi hai.
     """
     permission_classes = [AllowAny]
+
+    #singup se sirf ye roles  ban sakta hain . Admin sirf createsuperuser
+    ALLOWED_SINGUP_ROLES = {User.Role.USER, "seller"}
 
     def post(self, request):
         username = request.data.get("username")
         email = request.data.get("email", "")
         password = request.data.get("password")
-        role = request.data.get("role", User.Role.USER)
+        role = request.data.get("role") or  User.Role.USER
 
         if not username or not password:
             return Response(
                 {"detail": "username and password are required."}, status=400
+            )
+        if role not in self.ALLOWED_SINGUP_ROLES:
+            return Response(
+                {"detail":"Invalid role . Choose 'users' or 'seller' ."}, status=400
             )
 
         username = username.strip()  # leading/trailing spaces hata do

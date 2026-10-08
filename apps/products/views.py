@@ -22,7 +22,7 @@ from apps.orders.models import OrderItem
 
 from apps.products.cache import(
     get_cache_stats,
-    get_chched_product,
+    get_cached_product,  # FIX: Spelling theek ki hai
     invalidate_product,
     reset_cache_stats,
     set_cached_product
@@ -70,6 +70,22 @@ class ProductListCreateView(APIView):
             query["shop_id"] = p["shop_id"]
         if p.get("category"):
             query["category"] = p["category"]
+
+        # FIX: Band (inactive) shops ke products hide karo
+        inactive_ids = list(Shop.objects.filter(is_active=False).values_list("id", flat=True))
+        if inactive_ids:
+            if query.get("shop_id") in inactive_ids:
+                return Response(
+                    {
+                        "count": 0,
+                        "page": p["page"],
+                        "limit": p["limit"],
+                        "total_pages": 0,
+                        "results": [],
+                    }
+                )
+            if "shop_id" not in query:
+                query["shop_id"] = {"$nin": inactive_ids}
 
         price_filter = {}
         if "price_min" in p:
@@ -120,11 +136,6 @@ class ProductListCreateView(APIView):
                 "results": [serialize_product(d) for d in docs],
             }
         )
-
-
-
-
-       
 
     def post(self, request):
         serializer = ProductSerializer(data=request.data)
@@ -190,14 +201,14 @@ class ProductDetailView(APIView):
         if not ObjectId.is_valid(pk):
             return Response({"detail":"Product not found"}, status=404)
 
-        data = get_chched_product(pk)
+        data = get_cached_product(pk) # FIX: Spelling theek ki hai
         if data is not None:
             response = Response(data)
             response["X-Cache"] = "HIT"
             return response
 
         db = get_mongo_db()
-        product = self.__get_product_or_404(db,pk)
+        product = self._get_product_or_404(db,pk)
         if product is None:
             return Response({"detail":"Product not found"}, status=404)
 
@@ -207,10 +218,7 @@ class ProductDetailView(APIView):
         response["X-Cache"] = "MISS"
         return response
         
-
-            
-    
-    def patch(self, request, pk):
+    def patch(self, request, pk):            
         db = get_mongo_db()
         product = self._get_product_or_404(db, pk)
         if product is None:
@@ -263,7 +271,6 @@ class ProductDetailView(APIView):
         db.products.update_one({"_id": product["_id"]}, {"$set": update_data})
         invalidate_product(pk)
 
-
         updated_product = db.products.find_one({"_id": product["_id"]})
         return Response(serialize_product(updated_product))
 
@@ -282,7 +289,6 @@ class ProductDetailView(APIView):
         invalidate_product(pk)
         return Response({"detail": f"Product '{product['name']}' deleted successfully."})
     
-
 
 class ProductReviewView(APIView):
     """
@@ -392,18 +398,45 @@ class ProductRatingView(APIView):
             }
         )
 
+
 class ProductCacheStatsView(APIView):
-        """
+    """
     GET    /api/products/cache-stats/   -> hits, misses, hit ratio (sirf admin)
     DELETE /api/products/cache-stats/   -> counters reset (testing ke liye)
     """
-        permission_classes = [IsAuthenticated, HasRole]
-        allowed_roles = ["admin"]
+    permission_classes = [IsAuthenticated, HasRole]
+    allowed_roles = ["admin"]
 
-        def get(self, request):
-            return Response(get_cache_stats())
+    def get(self, request):
+        return Response(get_cache_stats())
 
-        def delete(self, request):
-            reset_cache_stats()
-            return Response({"detail": "cache counters reset"})
+    def delete(self, request):
+        reset_cache_stats()
+        return Response({"detail": "cache counters reset"})
 
+
+class ProductCategoryListView(APIView):
+    """
+    GET /api/products/categories/
+    Distinct categories + har category ke kitne products (filter sidebar ke liye).
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        db = get_mongo_db()
+
+        match = {}
+        inactive_ids = list(Shop.objects.filter(is_active=False).values_list("id", flat=True))
+        if inactive_ids:
+            match["shop_id"] = {"$nin": inactive_ids}
+
+        pipeline = [
+            {"$match": match},
+            {"$group": {"_id": "$category", "count": {"$sum": 1}}},
+            {"$sort": {"count": -1, "_id": 1}},
+        ]
+        rows = db.products.aggregate(pipeline)
+        return Response(
+            [{"name": r["_id"], "count": r["count"]} for r in rows if r["_id"]]
+        )

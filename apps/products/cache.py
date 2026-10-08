@@ -23,7 +23,7 @@ def _dump(key):
 
 
 
-def get_chched_product(pk):
+def  get_cached_product(pk):
     """Cache mein hai to dict, warna None. Hit/miss count bhi karta hai."""
     try:
         data = cache.get(product_cache_key(pk))

@@ -5,6 +5,7 @@ Checkout, order history, admin status update, aur seller order management.
 """
 
 import logging
+from django.db.models import Count, DecimalField, ExpressionWrapper, F, Sum
 
 from bson import ObjectId
 from bson.decimal128 import Decimal128
@@ -30,6 +31,112 @@ logger = logging.getLogger(__name__)
 
 FINAL_ITEM_STATUSES = {"delivered", "cancelled"}
 SELLER_ALLOWED_STATUSES = ["confirmed", "shipped", "delivered", "cancelled"]
+
+
+
+
+class BuyerOrderCancelView(APIView):
+    """
+    PATCH /api/orders/<id>/cancel/
+    Buyer apne order ke sirf 'pending' items cancel kar sakta hai.
+    Cancel hone par stock wapas Mongo mein jata hai.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def patch(self, request, pk):
+        try:
+            order = Order.objects.get(pk=pk, user=request.user)
+        except Order.DoesNotExist:
+            return Response({"detail": "Order not found."}, status=404)
+
+        with transaction.atomic():
+            items = list(order.items.select_for_update().filter(status="pending"))
+            if not items:
+                return Response(
+                    {"detail": "Koi pending item nahi hai, cancel nahi ho sakta."},
+                    status=400,
+                )
+            for item in items:
+                item.status = "cancelled"
+                item.save(update_fields=["status"])
+            order.recompute_status()
+
+        # Transaction commit ke BAAD stock wapas karo (with ke bahar)
+        db = get_mongo_db()
+        for item in items:
+            db.products.update_one(
+                {"_id": ObjectId(item.product_id)},
+                {"$inc": {"stock": item.quantity}},
+            )
+            invalidate_product(item.product_id)
+
+        try:
+            send_order_status_update_email.delay(
+                order.id, order.user.email, order.user.username, order.status
+            )
+        except Exception:
+            logger.exception("Cancel email queue nahi ho paya (order %s)", order.id)
+
+        return Response(OrderSerializer(order).data)
+
+ 
+class SellerSummaryView(APIView):
+    """
+    GET /api/orders/seller/summary/
+    Cancelled items sales mein count nahi hote.
+    """
+
+    permission_classes = [IsAuthenticated, HasRole]
+    allowed_roles = ["seller", "admin"]
+
+    def get(self, request):
+        shops = Shop.objects.filter(is_active=True)
+        if getattr(request.user, "role", None) != "admin":
+            shops = shops.filter(owner=request.user)
+
+        shop_names = dict(shops.values_list("id", "name"))
+        items = OrderItem.objects.filter(shop_id__in=list(shop_names.keys()))
+
+        line_total = ExpressionWrapper(
+            F("price") * F("quantity"),
+            output_field=DecimalField(max_digits=14, decimal_places=2),
+        )
+        valid = items.exclude(status="cancelled")
+
+        per_shop = (
+            valid.values("shop_id")
+            .annotate(revenue=Sum(line_total), items_sold=Sum("quantity"))
+            .order_by("-revenue")
+        )
+        total_sales = valid.aggregate(t=Sum(line_total))["t"] or 0
+        delivered_sales = (
+            items.filter(status="delivered").aggregate(t=Sum(line_total))["t"] or 0
+        )
+
+        return Response(
+            {
+                "pending_items": items.filter(status="pending").count(),
+                "total_orders": items.values("order_id").distinct().count(),
+                "total_sales": float(total_sales),
+                "delivered_sales": float(delivered_sales),
+                "shops": [
+                    {
+                        "shop_id": r["shop_id"],
+                        "shop_name": shop_names.get(r["shop_id"], ""),
+                        "revenue": float(r["revenue"] or 0),
+                        "items_sold": r["items_sold"] or 0,
+                    }
+                    for r in per_shop
+                ],
+            }
+        )
+
+
+    
+
+
+     
 
 
 class CheckoutView(APIView):
@@ -154,7 +261,7 @@ class CheckoutView(APIView):
         serializer = OrderSerializer(order)
         return Response(serializer.data, status=201)
 
-
+  
 class OrderListView(APIView):
     """
     GET /api/orders/   -> user ki order history

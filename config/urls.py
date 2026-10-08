@@ -6,6 +6,10 @@ def home(request):
     if request.user.is_authenticated:
         return JsonResponse({"detail": f"welcome {request.user.username}!"})
     return JsonResponse({"detail":"Not logged in."})
+
+def custom404(request, exception=None):
+    return JsonResponse({"detail": "Not found. Ye URL exist nahi karta."}, status=404)
+
                
 
 urlpatterns =[
