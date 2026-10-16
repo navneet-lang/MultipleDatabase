@@ -192,6 +192,10 @@ CELERY_RESULT_SERIALIZER = "json"
 CELERY_TIMEZONE = TIME_ZONE 
 
 
+
+MEDIA_URL = "/media/"
+MEDIA_ROOT = BASE_DIR / "media"
+
 #CACHES - redis db 1 (Celery db 0 use karta hai , aalag rakha )
 
 CASHES = {

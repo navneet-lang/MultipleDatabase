@@ -6,6 +6,7 @@ from rest_framework.views import APIView
 from apps.shops.models import Shop
 from apps.shops.serializers import AdminShopSerializer, ShopSerializer
 from core.permissions import HasRole
+from django.db.models import Count
 
 EDITABLE_SHOP_FIELDS ={"name" , "descriptions", "address","gst_number"}
 
@@ -14,7 +15,7 @@ EDITABLE_SHOP_FIELDS ={"name" , "descriptions", "address","gst_number"}
 class ShopListCreateView(APIView):
     """
         GET  /api/shops/   -> role ke hisab se :
-                            -seller:sirf apin shops, -user/admin:sarri active shops(admin ko extra fields)
+        -seller:sirf apin shops, -user/admin:sarri active shops(admin ko extra fields)
         POST /api/shops/   -> nayi shop banao (sirf seller/admin)
         """
 
@@ -80,7 +81,8 @@ class ShopDetailView(APIView):
             return Shop.objects.get(pk=pk, is_active=True)
         except Shop.DoesNotExist:
             return None
-
+        
+   
     def _can_manage(self, request, shop):
         is_admin = getattr(request.user, "role", None) == "admin"
         return shop.owner_id == request.user.id or is_admin
@@ -137,4 +139,33 @@ class ShopDetailView(APIView):
         shop.is_active= False
         shop.save(update_fields=["is_active"])
         return Response({"detail":f"Shop '{shop.name}' deactiveted."})
-        
+
+
+
+class FeaturedShopsView(APIView):
+    """GET /api/shops/featured/?limit=6 — zyada orders wali active shops pehle."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from apps.orders.models import OrderItem
+
+        try:
+            limit = min(max(int(request.query_params.get("limit", 6)), 1), 20)
+        except ValueError:
+            limit = 6
+
+        counts = dict(
+            OrderItem.objects.exclude(status="cancelled")
+            .values("shop_id")
+            .annotate(n=Count("id"))
+            .values_list("shop_id", "n")
+        )
+
+        shops = list(Shop.objects.filter(is_active=True))
+        shops.sort(key=lambda s: counts.get(s.id, 0), reverse=True)
+
+        data = ShopSerializer(shops[:limit], many=True).data
+        for row in data:
+            row["orders_count"] = counts.get(row["id"], 0)
+        return Response(data)

@@ -6,10 +6,13 @@ milta hai, saare operations yahan direct MongoDB collection pe hote hain
  to  ab ham isame ye add karnge like 
  curd+search/pagination + Redis cache
 """
+
+import uuid
 import math
 import time
 from datetime import datetime, timezone
-
+from django.db.models import Count, Sum
+from datetime import timedelta
 from bson import ObjectId
 from bson.decimal128 import Decimal128
 from bson.errors import InvalidId
@@ -19,6 +22,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.orders.models import OrderItem
+
 
 from apps.products.cache import(
     get_cache_stats,
@@ -37,6 +41,14 @@ from apps.products.serializers import (
 from apps.shops.models import Shop
 from core.mongo import get_mongo_db
 from core.permissions import HasRole
+from django.db.models import  Count,Sum
+from django.utils import timezone
+
+from django.conf import settings
+from django.core.files.storage import default_storage
+from PIL import Image
+from  rest_framework.parsers import FormParser, MultiPartParser
+
 
 
 def serialize_product(doc):
@@ -440,3 +452,148 @@ class ProductCategoryListView(APIView):
         return Response(
             [{"name": r["_id"], "count": r["count"]} for r in rows if r["_id"]]
         )
+
+
+
+class ProductTrendingView(APIView):
+    """
+    GET /api/products/trending/?limit=8&days=30
+    Rank: alag buyers > quantity. Cancelled items count nahi.
+    Window mein kuch na mile to all-time bestsellers (fallback).
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def _rank(self, since, limit):
+        qs = OrderItem.objects.exclude(status="cancelled")
+        if since:
+            qs = qs.filter(order__created_at__gte=since)
+        return list(
+            qs.values("product_id")
+            .annotate(
+                buyers=Count("order__user", distinct=True),
+                sold=Sum("quantity"),
+            )
+            .order_by("-buyers", "-sold")[: limit * 3]
+        )
+
+    def get(self, request):
+        try:
+            limit = min(max(int(request.query_params.get("limit", 8)), 1), 20)
+            days = min(max(int(request.query_params.get("days", 30)), 1), 365)
+        except ValueError:
+            limit, days = 8, 30
+
+        since = timezone.now() - timedelta(days=days)
+        rows = self._rank(since, limit)
+        fallback = False
+        if not rows:
+            rows = self._rank(None, limit)
+            fallback = True
+
+        stats = {r["product_id"]: r for r in rows}
+        object_ids = [ObjectId(p) for p in stats if ObjectId.is_valid(p)]
+
+        db = get_mongo_db()
+        docs = list(db.products.find({"_id": {"$in": object_ids}}, {"reviews": 0}))
+
+        active_shop_ids = set(
+            Shop.objects.filter(is_active=True).values_list("id", flat=True)
+        )
+        shop_names = dict(Shop.objects.values_list("id", "name"))
+
+        results = []
+        for d in docs:
+            if d.get("shop_id") not in active_shop_ids:
+                continue
+            pid = str(d["_id"])
+            item = serialize_product(d)
+            item["buyers"] = stats[pid]["buyers"]
+            item["sold"] = stats[pid]["sold"]
+            item["shop_name"] = shop_names.get(item.get("shop_id"), "")
+            results.append(item)
+
+        results.sort(key=lambda x: (x["buyers"], x["sold"]), reverse=True)
+        response = Response(results[:limit])
+        response["X-Trending-Fallback"] = "true" if fallback else "false"
+        return response
+
+
+
+MAX_IMAGE_BYTES = 2 * 1024 * 1024 # 2MB
+IMAGE_EXT = {"JPEG": ".jpg","PNG":".png", "WEBP":".webp"}
+
+
+def _delete_media(path):
+    """/media/products/x.jpg -> storage se file hata do."""
+    if path and path.startswith(settings.MEDIA_URL):
+        default_storage.delete(path[len(settings.MEDIA_URL):])
+
+
+class ProductImageView(APIView):
+    """
+    POST   /api/products/<id>/image/   form-data: image=<file>
+    DELETE /api/products/<id>/image/
+    Sirf shop ka owner ya admin. DB mein relative path save hota hai.
+    """
+
+    permission_classes = [IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser]
+
+    def _load(self, request, pk):
+        if not ObjectId.is_valid(pk):
+            return None, Response({"detail": "Product not found."}, status=404)
+        db = get_mongo_db()
+        product = db.products.find_one({"_id": ObjectId(pk)})
+        if product is None:
+            return None, Response({"detail": "Product not found."}, status=404)
+        try:
+            shop = Shop.objects.get(id=product["shop_id"])
+        except Shop.DoesNotExist:
+            return None, Response({"detail": "Shop not found."}, status=404)
+        is_admin = getattr(request.user, "role", None) == "admin"
+        if shop.owner_id != request.user.id and not is_admin:
+            return None, Response({"detail": "Not your product."}, status=403)
+        return (db, product), None
+
+    def post(self, request, pk):
+        loaded, err = self._load(request, pk)
+        if err:
+            return err
+        db, product = loaded
+
+        file = request.FILES.get("image")
+        if file is None:
+            return Response({"detail": "'image' file is required."}, status=400)
+        if file.size > MAX_IMAGE_BYTES:
+            return Response({"detail": "Image 2 MB se chhoti honi chahiye."}, status=400)
+
+        # Content-Type client bhejta hai (jhoota ho sakta hai), isliye file khud kholke dekho
+        try:
+            img = Image.open(file)
+            fmt = img.format
+            img.verify()
+        except Exception:
+            return Response({"detail": "Valid image nahi hai."}, status=400)
+        ext = IMAGE_EXT.get(fmt)
+        if ext is None:
+            return Response({"detail": "Sirf JPG, PNG ya WEBP allowed hai."}, status=400)
+        file.seek(0) 
+
+        saved = default_storage.save(f"products/{uuid.uuid4().hex}{ext}", file)
+        new_path = f"{settings.MEDIA_URL}{saved}"  # relative: /media/products/...
+
+        _delete_media(product.get("image"))
+        db.products.update_one({"_id": product["_id"]}, {"$set": {"image": new_path}})
+        invalidate_product(pk)
+        return Response({"image": new_path}, status=201)
+
+    def delete(self, request, pk):
+        loaded, err = self._load(request, pk)
+        if err:
+            return err
+        db, product = loaded
+        _delete_media(product.get("image"))
+        db.products.update_one({"_id": product["_id"]}, {"$unset": {"image": ""}})
+        invalidate_product(pk)
+        return Response({"detail": "Image removed."})

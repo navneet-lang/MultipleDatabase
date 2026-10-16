@@ -6,14 +6,15 @@ price, stock) live MongoDB se fetch hoti hai — display ke waqt.
 """
 
 from bson import ObjectId
-from bson.errors import InvalidId
 from bson.decimal128 import Decimal128
+from bson.errors import InvalidId
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.cart.models import CartItem
 from apps.cart.serializers import AddToCartSerializer, UpdateCartItemSerializer
+from apps.shops.models import Shop
 from core.mongo import get_mongo_db
 
 
@@ -53,12 +54,22 @@ class CartView(APIView):
         db = get_mongo_db()
         items = CartItem.objects.filter(user=request.user)
 
+        # Active shops ek hi query mein
+        active_shop_ids = set(
+            Shop.objects.filter(is_active=True).values_list("id", flat=True)
+        )
+
         cart_data = []
         total = 0.0
         for item in items:
             snapshot = get_product_snapshot(db, item.product_id)
             if snapshot is None:
-                # Product delete ho chuka hai — cart se bhi hata do
+                # Product delete ho chuka hai, cart se bhi hata do
+                item.delete()
+                continue
+
+            # Shop band (soft delete) ho chuki hai, item cart se hata do
+            if snapshot["shop_id"] not in active_shop_ids:
                 item.delete()
                 continue
 
@@ -95,6 +106,21 @@ class CartView(APIView):
         snapshot = get_product_snapshot(db, data["product_id"])
         if snapshot is None:
             return Response({"detail": "Product not found."}, status=404)
+
+        # Shop active honi chahiye
+        try:
+            shop = Shop.objects.get(id=snapshot["shop_id"], is_active=True)
+        except Shop.DoesNotExist:
+            return Response(
+                {"detail": "This shop is no longer available."}, status=400
+            )
+
+        # Seller apni hi shop ka product cart mein na daal sake
+        if shop.owner_id == request.user.id:
+            return Response(
+                {"detail": "You cannot add products from your own shop to the cart."},
+                status=400,
+            )
 
         # Cart mein jitna pehle se hai, usse jodke stock check karo
         existing = CartItem.objects.filter(
@@ -183,3 +209,4 @@ class ClearCartView(APIView):
     def delete(self, request):
         CartItem.objects.filter(user=request.user).delete()
         return Response({"detail": "Cart cleared."})
+             

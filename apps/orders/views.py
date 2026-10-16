@@ -5,11 +5,11 @@ Checkout, order history, admin status update, aur seller order management.
 """
 
 import logging
-from django.db.models import Count, DecimalField, ExpressionWrapper, F, Sum
 
 from bson import ObjectId
 from bson.decimal128 import Decimal128
 from django.db import transaction
+from django.db.models import DecimalField, ExpressionWrapper, F, Sum
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -33,6 +33,24 @@ FINAL_ITEM_STATUSES = {"delivered", "cancelled"}
 SELLER_ALLOWED_STATUSES = ["confirmed", "shipped", "delivered", "cancelled"]
 
 
+def paginate_queryset(request, qs, serializer_cls, max_limit=50):
+    """?page=1&limit=10 -> {count, page, limit, total_pages, results}"""
+    try:
+        page = max(int(request.query_params.get("page", 1)), 1)
+        limit = min(max(int(request.query_params.get("limit", 10)), 1), max_limit)
+    except ValueError:
+        page, limit = 1, 10
+
+    total = qs.count()
+    start = (page - 1) * limit
+    rows = qs[start:start + limit]
+    return {
+        "count": total,
+        "page": page,
+        "limit": limit,
+        "total_pages": (total + limit - 1) // limit if total else 0,
+        "results": serializer_cls(rows, many=True).data,
+    }
 
 
 class BuyerOrderCancelView(APIView):
@@ -62,7 +80,7 @@ class BuyerOrderCancelView(APIView):
                 item.save(update_fields=["status"])
             order.recompute_status()
 
-        # Transaction commit ke BAAD stock wapas karo (with ke bahar)
+        # Transaction commit ke BAAD stock wapas karo
         db = get_mongo_db()
         for item in items:
             db.products.update_one(
@@ -80,7 +98,7 @@ class BuyerOrderCancelView(APIView):
 
         return Response(OrderSerializer(order).data)
 
- 
+
 class SellerSummaryView(APIView):
     """
     GET /api/orders/seller/summary/
@@ -133,12 +151,6 @@ class SellerSummaryView(APIView):
         )
 
 
-    
-
-
-     
-
-
 class CheckoutView(APIView):
     """
     POST /api/orders/checkout/
@@ -159,6 +171,9 @@ class CheckoutView(APIView):
             return Response({"detail": "Delivery address is required."}, status=400)
 
         db = get_mongo_db()
+        active_shop_ids = set(
+            Shop.objects.filter(is_active=True).values_list("id", flat=True)
+        )
 
         # Step 1: products fetch + quick stock verify (hamesha Mongo se, cache se nahi)
         line_items = []
@@ -174,6 +189,15 @@ class CheckoutView(APIView):
             if product is None:
                 return Response(
                     {"detail": f"Product no longer available: {cart_item.product_id}"}, status=400
+                )
+
+            if product.get("shop_id") not in active_shop_ids:
+                return Response(
+                    {
+                        "detail": f"'{product.get('name')}' ki shop ab available nahi hai. "
+                        "Cart se hata do."
+                    },
+                    status=400,
                 )
 
             if product.get("stock", 0) < cart_item.quantity:
@@ -250,7 +274,7 @@ class CheckoutView(APIView):
         for item in line_items:
             invalidate_product(item["product_id"])
 
-        # Step 5: confirmation email (Celery background) - fail ho to order na tute
+        # Step 5: confirmation email (Celery background)
         try:
             send_order_confirmation_email.delay(
                 order.id, request.user.email, request.user.username, str(order.total_amount)
@@ -258,21 +282,23 @@ class CheckoutView(APIView):
         except Exception:
             logger.exception("Order confirmation email queue nahi ho paya (order %s)", order.id)
 
-        serializer = OrderSerializer(order)
-        return Response(serializer.data, status=201)
+        return Response(OrderSerializer(order).data, status=201)
 
-  
+
 class OrderListView(APIView):
     """
-    GET /api/orders/   -> user ki order history
+    GET /api/orders/?page=1&limit=10   -> user ki order history (paginated)
     """
 
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        orders = Order.objects.filter(user=request.user).order_by("-created_at")
-        serializer = OrderSerializer(orders, many=True)
-        return Response(serializer.data)
+        orders = (
+            Order.objects.filter(user=request.user)
+            .prefetch_related("items")
+            .order_by("-created_at")
+        )
+        return Response(paginate_queryset(request, orders, OrderSerializer))
 
 
 class OrderDetailView(APIView):
@@ -337,8 +363,7 @@ class OrderDetailView(APIView):
 
 class SellerOrderItemListView(APIView):
     """
-    GET /api/orders/seller/items/            -> apni shops ke order items
-    GET /api/orders/seller/items/?status=pending  -> status se filter
+    GET /api/orders/seller/items/?status=pending&page=1&limit=10
     Admin ko saare items dikhte hain.
     """
 
@@ -357,7 +382,7 @@ class SellerOrderItemListView(APIView):
             items = items.filter(status=status_filter)
 
         items = items.order_by("-order__created_at")
-        return Response(SellerOrderItemSerializer(items, many=True).data)
+        return Response(paginate_queryset(request, items, SellerOrderItemSerializer))
 
 
 class SellerOrderItemStatusView(APIView):
@@ -408,17 +433,26 @@ class SellerOrderItemStatusView(APIView):
                 {"_id": ObjectId(item.product_id)},
                 {"$inc": {"stock": item.quantity}},
             )
-            invalidate_product(item.product_id)
+            invalidate_product(item.product_id) 
 
         try:
             send_order_item_status_email.delay(
                 item.order_id,
                 item.order.user.email,
-                item.order.user.username,
+                item.order.user.username,            
                 item.name,
                 new_status,
             )
         except Exception:
             logger.exception("Item status email queue nahi ho paya (item %s)", item.id)
 
-        return Response(SellerOrderItemSerializer(item).data)
+        return Response(SellerOrderItemSerializer(item).data) 
+
+
+ 
+
+
+
+   
+
+      
