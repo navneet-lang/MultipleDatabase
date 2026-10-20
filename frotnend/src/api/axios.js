@@ -15,9 +15,13 @@ api.interceptors.response.use(
   (response) => response,
   async (error) => {
     const original = error.config;
-    const isRefreshCall = original.url?.includes("/auth/refresh/");
+    const isPublicAuthCall = [
+      "/auth/register/",
+      "/auth/login/",
+      "/auth/refresh/",
+    ].some((path) => original.url?.endsWith(path));
 
-    if (error.response?.status === 401 && !original._retry && !isRefreshCall) {
+    if (error.response?.status === 401 && !original._retry && !isPublicAuthCall) {
       original._retry = true;
       try {
         await api.post("/auth/refresh/");

@@ -13,6 +13,9 @@ import AddProduct from "./pages/AddProduct";
 import MyShops from "./pages/MyShops";
 import ShopDetail from "./pages/ShopDetail";
 import CreateShop from "./pages/CreateShop";
+import ProductDetail from "./pages/ProductDetail";
+import ShopStorefront from "./pages/ShopStorefront";
+import BuyerOrders from "./pages/BuyerOrders";
 
 export default function App() {
   return (
@@ -32,6 +35,8 @@ export default function App() {
             }
           >
             <Route path="/dashboard" element={<Dashboard />} />
+            <Route path="/products/:id" element={<ProductDetail />} />
+            <Route path="/store/:id" element={<ShopStorefront />} />
 
             {/* Seller + Admin */}
             <Route element={<RoleRoute allow={["seller", "admin"]} />}>
@@ -42,9 +47,11 @@ export default function App() {
             </Route>
 
             {/* Customer + Admin */}
-            <Route element={<RoleRoute allow={["users", "admin"]} />}>
+            <Route element={<RoleRoute allow={["user", "admin"]} />}>
               <Route path="/products" element={<ProductCatalog />} />
               <Route path="/cart" element={<Cart />} />
+              <Route path="/orders" element={<BuyerOrders />} />
+              <Route path="/orders/:id" element={<BuyerOrders />} />
             </Route>
           </Route>
 

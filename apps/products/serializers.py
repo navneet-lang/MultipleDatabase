@@ -57,4 +57,5 @@ class ProductListQuerySerializer(serializers.Serializer):
         if price_min is not None and price_max is not None and price_min > price_max:
             raise serializers.ValidationError("price_min, price_max se bada nahi ho sakta.")
         return attrs
-
+      
+             

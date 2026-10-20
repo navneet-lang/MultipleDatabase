@@ -19,11 +19,8 @@ export default function Login() {
     setError("");
     setSubmitting(true);
     try {
-      const data = await login(form.username.trim(), form.password);
-
-      if (data?.role === "seller") navigate("/my-shops");
-      else if (data?.role === "admin") navigate("/dashboard");
-      else navigate("/products");
+      await login(form.username.trim(), form.password);
+      navigate("/dashboard");
     } catch (err) {
       const detail = err.response?.data?.detail;
       setError(detail || "Login failed. Check your username and password.");

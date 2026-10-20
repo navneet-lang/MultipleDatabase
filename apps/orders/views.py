@@ -10,6 +10,7 @@ from bson import ObjectId
 from bson.decimal128 import Decimal128
 from django.db import transaction
 from django.db.models import DecimalField, ExpressionWrapper, F, Sum
+from pymongo.errors import PyMongoError
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -31,6 +32,61 @@ logger = logging.getLogger(__name__)
 
 FINAL_ITEM_STATUSES = {"delivered", "cancelled"}
 SELLER_ALLOWED_STATUSES = ["confirmed", "shipped", "delivered", "cancelled"]
+RESTOCKED_ITEM_IDS_FIELD = "_restocked_order_item_ids"
+
+
+class InventoryRestockError(Exception):
+    pass
+
+
+def restock_cancelled_item(db, item):
+    """Restore stock once per order item, including when cancellation is retried."""
+    if not ObjectId.is_valid(item.product_id):
+        raise InventoryRestockError(
+            f"Cannot restore stock for invalid product ID on order item {item.id}."
+        )
+
+    product_id = ObjectId(item.product_id)
+    restock_key = str(item.id)
+    result = db.products.update_one(
+        {
+            "_id": product_id,
+            RESTOCKED_ITEM_IDS_FIELD: {"$ne": restock_key},
+        },
+        {
+            "$inc": {"stock": item.quantity},
+            "$addToSet": {RESTOCKED_ITEM_IDS_FIELD: restock_key},
+        },
+    )
+    if result.modified_count:
+        return
+
+    product = db.products.find_one(
+        {"_id": product_id},
+        {RESTOCKED_ITEM_IDS_FIELD: 1},
+    )
+    if product is None:
+        raise InventoryRestockError(
+            f"Product for order item {item.id} no longer exists; stock was not restored."
+        )
+    if restock_key not in product.get(RESTOCKED_ITEM_IDS_FIELD, []):
+        raise InventoryRestockError(
+            f"Stock could not be restored for order item {item.id}."
+        )
+
+
+def clear_restock_markers(db, items):
+    for item in items:
+        try:
+            db.products.update_one(
+                {"_id": ObjectId(item.product_id)},
+                {"$pull": {RESTOCKED_ITEM_IDS_FIELD: str(item.id)}},
+            )
+        except PyMongoError:
+            logger.exception(
+                "Could not clear inventory restock marker for order item %s",
+                item.id,
+            )
 
 
 def paginate_queryset(request, qs, serializer_cls, max_limit=50):
@@ -68,26 +124,35 @@ class BuyerOrderCancelView(APIView):
         except Order.DoesNotExist:
             return Response({"detail": "Order not found."}, status=404)
 
-        with transaction.atomic():
-            items = list(order.items.select_for_update().filter(status="pending"))
-            if not items:
-                return Response(
-                    {"detail": "Koi pending item nahi hai, cancel nahi ho sakta."},
-                    status=400,
-                )
-            for item in items:
-                item.status = "cancelled"
-                item.save(update_fields=["status"])
-            order.recompute_status()
+        try:
+            with transaction.atomic():
+                items = list(order.items.select_for_update().filter(status="pending"))
+                if not items:
+                    return Response(
+                        {"detail": "No pending items available to cancel."},
+                        status=400,
+                    )
 
-        # Transaction commit ke BAAD stock wapas karo
-        db = get_mongo_db()
-        for item in items:
-            db.products.update_one(
-                {"_id": ObjectId(item.product_id)},
-                {"$inc": {"stock": item.quantity}},
+                db = get_mongo_db()
+                for item in items:
+                    restock_cancelled_item(db, item)
+
+                for item in items:
+                    item.status = "cancelled"
+                    item.save(update_fields=["status"])
+                order.recompute_status()
+        except InventoryRestockError as exc:
+            return Response({"detail": str(exc)}, status=409)
+        except PyMongoError:
+            logger.exception("Inventory restock failed for order %s", order.id)
+            return Response(
+                {"detail": "Inventory service is unavailable. Please retry cancellation."},
+                status=503,
             )
+
+        for item in items:
             invalidate_product(item.product_id)
+        clear_restock_markers(db, items)
 
         try:
             send_order_status_update_email.delay(
@@ -396,44 +461,63 @@ class SellerOrderItemStatusView(APIView):
     allowed_roles = ["seller", "admin"]
 
     def patch(self, request, item_id):
+        db = None
         try:
-            item = OrderItem.objects.select_related("order", "order__user").get(pk=item_id)
+            with transaction.atomic():
+                item = (
+                    OrderItem.objects.select_for_update()
+                    .select_related("order", "order__user")
+                    .get(pk=item_id)
+                )
+                is_admin = getattr(request.user, "role", None) == "admin"
+                owns_shop = Shop.objects.filter(
+                    id=item.shop_id, owner=request.user
+                ).exists()
+                if not (is_admin or owns_shop):
+                    return Response(
+                        {"detail": "You can only update items from your own shop."},
+                        status=403,
+                    )
+
+                new_status = request.data.get("status")
+                if new_status not in SELLER_ALLOWED_STATUSES:
+                    return Response(
+                        {"detail": f"Invalid status. Choose from: {SELLER_ALLOWED_STATUSES}"},
+                        status=400,
+                    )
+
+                if item.status in FINAL_ITEM_STATUSES:
+                    return Response(
+                        {"detail": f"Item already '{item.status}', it cannot be changed."},
+                        status=400,
+                    )
+
+                if new_status == "cancelled":
+                    if item.status not in {"pending", "confirmed"}:
+                        return Response(
+                            {"detail": "A shipped order item cannot be cancelled."},
+                            status=400,
+                        )
+                    db = get_mongo_db()
+                    restock_cancelled_item(db, item)
+
+                item.status = new_status
+                item.save(update_fields=["status"])
+                item.order.recompute_status()
         except OrderItem.DoesNotExist:
             return Response({"detail": "Order item not found."}, status=404)
-
-        is_admin = getattr(request.user, "role", None) == "admin"
-        owns_shop = Shop.objects.filter(id=item.shop_id, owner=request.user).exists()
-        if not (is_admin or owns_shop):
+        except InventoryRestockError as exc:
+            return Response({"detail": str(exc)}, status=409)
+        except PyMongoError:
+            logger.exception("Inventory restock failed for order item %s", item_id)
             return Response(
-                {"detail": "You can only update items from your own shop."}, status=403
+                {"detail": "Inventory service is unavailable. Please retry cancellation."},
+                status=503,
             )
 
-        new_status = request.data.get("status")
-        if new_status not in SELLER_ALLOWED_STATUSES:
-            return Response(
-                {"detail": f"Invalid status. Choose from: {SELLER_ALLOWED_STATUSES}"},
-                status=400,
-            )
-
-        if item.status in FINAL_ITEM_STATUSES:
-            return Response(
-                {"detail": f"Item already '{item.status}', ab change nahi ho sakta."},
-                status=400,
-            )
-
-        with transaction.atomic():
-            item.status = new_status
-            item.save(update_fields=["status"])
-            item.order.recompute_status()
-
-        # Cancel hua to stock wapas Mongo mein + cache invalidate
         if new_status == "cancelled":
-            db = get_mongo_db()
-            db.products.update_one(
-                {"_id": ObjectId(item.product_id)},
-                {"$inc": {"stock": item.quantity}},
-            )
-            invalidate_product(item.product_id) 
+            invalidate_product(item.product_id)
+            clear_restock_markers(db, [item])
 
         try:
             send_order_item_status_email.delay(

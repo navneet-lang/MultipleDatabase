@@ -6,6 +6,7 @@ export default function CreateShop() {
   const navigate = useNavigate();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [image, setImage] = useState(null);
   const [form, setForm] = useState({
     name: "",
     description: "",
@@ -20,7 +21,11 @@ export default function CreateShop() {
     setLoading(true);
     setError("");
     try {
-      const res = await createShop(form);
+      const data = new FormData();
+      Object.entries(form).forEach(([name, value]) => data.append(name, value));
+      if (image) data.append("image", image);
+
+      const res = await createShop(data);
       navigate(`/shops/${res.data.id}`);
     } catch (err) {
       const data = err.response?.data;
@@ -67,6 +72,16 @@ export default function CreateShop() {
             <label className={label}>GST Number (optional)</label>
             <input name="gst_number" value={form.gst_number} onChange={handleChange}
               className={input} placeholder="09ABCDE1234F1Z9" />
+          </div>
+          <div>
+            <label className={label}>Shop cover image (optional)</label>
+            <input
+              type="file"
+              accept="image/jpeg,image/png,image/webp"
+              onChange={(e) => setImage(e.target.files?.[0] || null)}
+              className="w-full text-sm text-slate-600 file:mr-3 file:rounded-lg file:border-0 file:bg-indigo-50 file:px-4 file:py-2 file:font-semibold file:text-indigo-900 hover:file:bg-indigo-100"
+            />
+            <p className="mt-1 text-xs text-slate-500">JPG, PNG ya WEBP · maximum 2 MB</p>
           </div>
           <button type="submit" disabled={loading}
             className="w-full mt-2 bg-indigo-900 text-white py-3 rounded-lg font-bold hover:bg-indigo-800 transition disabled:opacity-50">

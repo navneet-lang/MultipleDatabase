@@ -30,6 +30,7 @@ class RegisterView(APIView):
     `role` optional hai, default customer. "admin" kabhi allow nahi hai.
     """
     permission_classes = [AllowAny]
+    authentication_classes = []
 
     #singup se sirf ye roles  ban sakta hain . Admin sirf createsuperuser
     ALLOWED_SINGUP_ROLES = {User.Role.USER, "seller"}
@@ -46,7 +47,7 @@ class RegisterView(APIView):
             )
         if role not in self.ALLOWED_SINGUP_ROLES:
             return Response(
-                {"detail":"Invalid role . Choose 'users' or 'seller' ."}, status=400
+                {"detail": "Invalid role. Choose 'user' or 'seller'."}, status=400
             )
 
         username = username.strip()  # leading/trailing spaces hata do
@@ -71,6 +72,7 @@ class LoginView(APIView):
     Success par access+refresh tokens httpOnly cookies mein set ho jate hain.
     """
     permission_classes = [AllowAny]
+    authentication_classes = []
 
     def post(self, request):
         username = request.data.get("username")
@@ -105,6 +107,7 @@ class RefreshView(APIView):
     refresh token, kyunki ROTATE_REFRESH_TOKENS=True hai) issue karta hai.
     """
     permission_classes = [AllowAny]
+    authentication_classes = []
 
     def post(self, request):
         refresh_token = get_token_from_cookie(request, REFRESH_COOKIE_NAME)

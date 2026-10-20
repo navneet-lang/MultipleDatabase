@@ -77,3 +77,16 @@ class OrderItem(models.Model):
 
     def __str__(self):
         return f"{self.name} x{self.quantity} (Order #{self.order_id})"
+
+
+# from django.contrib.auth import get_user_model
+# User = get_user_model()
+
+# # User ki email se dhoondh kar isko admin (superuser/staff) bana do
+# user = User.objects.get(email="yahan_user_ki_email_daal")
+# user.is_superuser = True
+# user.is_staff = True
+# user.save()
+   
+   
+ 

@@ -39,14 +39,23 @@ export default function MyShops() {
             <button
               key={shop.id}
               onClick={() => navigate(`/shops/${shop.id}`)}
-              className="text-left bg-white p-5 rounded-xl shadow-sm border border-slate-200 hover:border-indigo-400 transition"
+              className="overflow-hidden text-left bg-white rounded-xl shadow-sm border border-slate-200 hover:border-indigo-400 transition"
             >
-              <h2 className="text-lg font-bold text-slate-800">{shop.name}</h2>
-              <p className="text-sm text-slate-500 mt-1 line-clamp-2">
-                {shop.description}
-              </p>
-              <p className="text-xs text-slate-400 mt-1">{shop.address}</p>
-              <p className="text-xs text-indigo-700 mt-3 font-medium">Open shop →</p>
+              {shop.image_url ? (
+                <img src={shop.image_url} alt="" className="h-40 w-full object-cover" />
+              ) : (
+                <div className="flex h-40 items-center justify-center bg-gradient-to-br from-indigo-100 to-slate-100 text-4xl font-extrabold text-indigo-300">
+                  {shop.name?.charAt(0).toUpperCase()}
+                </div>
+              )}
+              <div className="p-5">
+                <h2 className="text-lg font-bold text-slate-800">{shop.name}</h2>
+                <p className="text-sm text-slate-500 mt-1 line-clamp-2">
+                  {shop.description}
+                </p>
+                <p className="text-xs text-slate-400 mt-1">{shop.address}</p>
+                <p className="text-xs text-indigo-700 mt-3 font-medium">Open shop →</p>
+              </div>
             </button>
           ))}
         </div>

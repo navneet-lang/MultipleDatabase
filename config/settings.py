@@ -167,7 +167,7 @@ SOCIALACCOUNT_PROVIDERS = {
 
 LOGIN_REDIRECT_URL = "/"
 
-GOOGLE_CLIENT_ID = config("GOOG  LE_CLIENT_ID", default="")
+GOOGLE_CLIENT_ID = config("GOOGLE_CLIENT_ID", default="")
 GOOGLE_CLIENT_SECRET = config("GOOGLE_CLIENT_SECRET", default="")
 
 # ----------------------------------------------------------------------
@@ -198,9 +198,15 @@ MEDIA_ROOT = BASE_DIR / "media"
 
 #CACHES - redis db 1 (Celery db 0 use karta hai , aalag rakha )
 
-CASHES = {
+CACHES = {                                                  # CASHES nahi
     "default": {
         "BACKEND": "django.core.cache.backends.redis.RedisCache",
         "LOCATION": config("REDIS_CACHE_URL", default="redis://redis:6379/1"),
     }
 }
+SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+USE_X_FORWARDED_HOST = True
+MEDIA_URL = "/media/"
+MEDIA_ROOT = BASE_DIR / "media"
+
+

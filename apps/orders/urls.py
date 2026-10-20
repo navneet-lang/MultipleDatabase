@@ -27,3 +27,4 @@ urlpatterns = [
     path("seller/summary/", SellerSummaryView.as_view()),
 path("<int:pk>/cancel/", BuyerOrderCancelView.as_view()),
 ]
+

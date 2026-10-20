@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { getMe, logoutUser } from "../api/auth";
-
+import { getCart } from "../api/cart";
 export default function Navbar() {
   const [user, setUser] = useState(null);
   const [open, setOpen] = useState(false);
+  const [cartCount, setCartCount] = useState(0);
   const dropdownRef = useRef(null);
   const navigate = useNavigate();
 
@@ -13,6 +14,18 @@ export default function Navbar() {
       .then((res) => setUser(res.data))
       .catch(() => setUser(null));
   }, []);
+
+  useEffect(() => {
+    if (user?.role !== "user") return undefined;
+
+  const load = () =>
+    getCart()
+      .then((res) => setCartCount(res.data.count || 0))
+      .catch(() => setCartCount(0));
+  load();
+  window.addEventListener("cart:changed", load);
+  return () => window.removeEventListener("cart:changed", load);
+}, [user?.role]);
 
   // Close dropdown on click outside
   useEffect(() => {
@@ -38,8 +51,7 @@ export default function Navbar() {
   };
 
   const role = user?.role;
-  const home =
-    role === "seller" ? "/my-shops" : role === "admin" ? "/dashboard" : "/products";
+  const home = role ? "/dashboard" : "/login";
   const link = "text-sm font-medium text-slate-600 hover:text-indigo-900";
 
   return (
@@ -49,11 +61,11 @@ export default function Navbar() {
       </Link>
 
       <div className="flex items-center gap-6">
-        {/* Seller */}
         {role === "seller" && (
-          <Link to="/my-shops" className={link}>
-            My Shops
-          </Link>
+          <>
+            <Link to="/dashboard" className={link}>Dashboard</Link>
+            <Link to="/my-shops" className={link}>My Shops</Link>
+          </>
         )}
 
         {/* Admin */}
@@ -65,11 +77,20 @@ export default function Navbar() {
           </>
         )}
 
-        {/* Customer (role: "users") */}
-        {role === "users" && (
+        {/* Customer */}
+        {role === "user" && (
           <>
-            <Link to="/products" className={link}>Products</Link>
-            <Link to="/cart" className={link}>Cart</Link>
+            <Link to="/dashboard" className={link}>Home</Link>
+            <Link to="/products" className={link}>Shop</Link>
+            <Link to="/orders" className={link}>My Orders</Link>
+            <Link to="/cart" className={`${link} relative`}>
+  Cart
+  {cartCount > 0 && (
+    <span className="absolute -top-2 -right-4 bg-indigo-900 text-white text-[10px] font-bold rounded-full min-w-[18px] h-[18px] flex items-center justify-center px-1">
+      {cartCount}
+    </span>
+  )}
+</Link>
           </>
         )}
 

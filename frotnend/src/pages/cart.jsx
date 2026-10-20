@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { clearCart, getCart, removeCartItem, updateCartItem } from "../api/cart";
-import { placeOrder } from "../api/orders";
+import { placeOrder } from "../api/order";
 
 export default function Cart() {
   const [items, setItems] = useState([]);
@@ -13,14 +13,15 @@ export default function Cart() {
   const [placed, setPlaced] = useState(null); // order response
 
   const loadCart = () => {
-    getCart()
-      .then((res) => {
-        setItems(res.data.items || []);
-        setTotal(res.data.total || 0);
-      })
-      .catch((err) => console.error("Cart load error:", err))
-      .finally(() => setLoading(false));
-  };
+  getCart()
+    .then((res) => {
+      setItems(res.data.items || []);
+      setTotal(res.data.total || 0);
+      window.dispatchEvent(new Event("cart:changed")); // <-- yahan
+    })
+    .catch((err) => console.error("Cart load error:", err))
+    .finally(() => setLoading(false));
+};
 
   useEffect(() => {
     loadCart();
@@ -56,26 +57,29 @@ export default function Cart() {
     }
   };
 
-  const handlePlaceOrder = async () => {
-    setError("");
-    if (!address.trim()) {
-      setError("Delivery address daalo.");
-      return;
-    }
-    setPlacing(true);
-    try {
-      const res = await placeOrder(address.trim());
-      setPlaced(res.data);
-      setItems([]);
-      setTotal(0);
-    } catch (err) {
-      const data = err.response?.data;
-      setError(data?.detail || (data ? JSON.stringify(data) : "Order place nahi ho paya."));
-      loadCart(); // stock badla ho to latest dikhao
-    } finally {
-      setPlacing(false);
-    }
-  };
+ const handlePlaceOrder = async () => {
+  setError("");
+  if (!address.trim()) {
+    setError("Delivery address daalo.");
+    return;
+  }
+  setPlacing(true);
+  try {
+    const res = await placeOrder(address.trim());
+    setPlaced(res.data);
+    setItems([]);
+    setTotal(0);
+    window.dispatchEvent(new Event("cart:changed")); // <-- yahan
+  } catch (err) {
+    const data = err.response?.data;
+    setError(data?.detail || (data ? JSON.stringify(data) : "Order place nahi ho paya."));
+    loadCart();
+  } finally {
+    setPlacing(false);
+  }
+};
+
+
 
   if (loading) {
     return (

@@ -10,9 +10,8 @@ milta hai, saare operations yahan direct MongoDB collection pe hote hain
 import uuid
 import math
 import time
-from datetime import datetime, timezone
-from django.db.models import Count, Sum
 from datetime import timedelta
+from django.db.models import Count, Sum
 from bson import ObjectId
 from bson.decimal128 import Decimal128
 from bson.errors import InvalidId
@@ -41,7 +40,6 @@ from apps.products.serializers import (
 from apps.shops.models import Shop
 from core.mongo import get_mongo_db
 from core.permissions import HasRole
-from django.db.models import  Count,Sum
 from django.utils import timezone
 
 from django.conf import settings
@@ -58,6 +56,10 @@ def serialize_product(doc):
         doc["price"] = float(doc["price"].to_decimal())
     return doc
 
+def with_image_url(doc ,request):
+    path = doc.get("image")
+    doc["image_url"]  =  request.build_absolute_uri(path) if path else None
+    return doc
 
 class ProductListCreateView(APIView):
     """
@@ -145,7 +147,7 @@ class ProductListCreateView(APIView):
                 "page": page,
                 "limit": limit,
                 "total_pages": math.ceil(total / limit) if total else 0,
-                "results": [serialize_product(d) for d in docs],
+                "results": [with_image_url(serialize_product(d), request) for d in docs],
             }
         )
 
@@ -213,21 +215,26 @@ class ProductDetailView(APIView):
         if not ObjectId.is_valid(pk):
             return Response({"detail":"Product not found"}, status=404)
 
-        data = get_cached_product(pk) # FIX: Spelling theek ki hai
-        if data is not None:
-            response = Response(data)
-            response["X-Cache"] = "HIT"
-            return response
+        data = get_cached_product(pk)
+        cache_status = "HIT"
+        if data is None:
+            db = get_mongo_db()
+            product = self._get_product_or_404(db, pk)
+            if product is None:
+                return Response({"detail": "Product not found."}, status=404)
+            data = serialize_product(product)
+            set_cached_product(pk, data)
+            cache_status = "MISS"
 
-        db = get_mongo_db()
-        product = self._get_product_or_404(db,pk)
-        if product is None:
-            return Response({"detail":"Product not found"}, status=404)
+        shop = Shop.objects.filter(id=data.get("shop_id")).first()
+        if shop is None:
+            return Response({"detail": "Product not found."}, status=404)
+        is_admin = getattr(request.user, "role", None) == "admin"
+        if not shop.is_active and shop.owner_id != request.user.id and not is_admin:
+            return Response({"detail": "Product not found."}, status=404)
 
-        data = serialize_product(product)
-        set_cached_product(pk, data)
-        response = Response(data)
-        response["X-Cache"] = "MISS"
+        response = Response(with_image_url(dict(data), request))
+        response["X-Cache"] = cache_status
         return response
         
     def patch(self, request, pk):            
@@ -356,7 +363,7 @@ class ProductReviewView(APIView):
             "username": request.user.username,
             "rating": data["rating"],
             "comment": data.get("comment", ""),
-            "created_at": datetime.now(timezone.utc).isoformat(),
+            "created_at": timezone.now().isoformat(),
         }
 
         # $push — embedded array mein naya document add karta hai
@@ -511,7 +518,7 @@ class ProductTrendingView(APIView):
             item["buyers"] = stats[pid]["buyers"]
             item["sold"] = stats[pid]["sold"]
             item["shop_name"] = shop_names.get(item.get("shop_id"), "")
-            results.append(item)
+            results.append(with_image_url(item, request))
 
         results.sort(key=lambda x: (x["buyers"], x["sold"]), reverse=True)
         response = Response(results[:limit])
@@ -586,7 +593,13 @@ class ProductImageView(APIView):
         _delete_media(product.get("image"))
         db.products.update_one({"_id": product["_id"]}, {"$set": {"image": new_path}})
         invalidate_product(pk)
-        return Response({"image": new_path}, status=201)
+        return Response(
+            {
+                "image": new_path,
+                "image_url": request.build_absolute_uri(new_path),
+            },
+            status=201,
+        )
 
     def delete(self, request, pk):
         loaded, err = self._load(request, pk)
