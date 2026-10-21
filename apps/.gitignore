@@ -1,0 +1,19 @@
+# Python / Django
+__pycache__/
+*.py[cod]
+$py.class
+*.sqlite3
+media/
+staticfiles/
+.env
+
+# Node / React (Frontend)
+frotnend/node_modules/
+frotnend/dist/
+frotnend/.vite/
+
+# OS / Editor junk
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

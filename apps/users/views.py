@@ -4,7 +4,8 @@ apps/users/views.py
 Login, register, refresh, logout endpoints — core/cookies.py, core/authentication.py
 aur core/permissions.py yahan actual use ho rahe hain.
 """
-
+import random
+import secrets
 from django.contrib.auth import authenticate, get_user_model
 from rest_framework import status
 from rest_framework.permissions import AllowAny, IsAuthenticated
@@ -12,6 +13,16 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.exceptions import TokenError
 from rest_framework_simplejwt.tokens import RefreshToken
+
+
+
+# new one 
+from django.conf import settings
+from django.contrib.auth.hashers import check_password, make_password
+from django.utils import timezone
+from django.contrib.auth import get_user_model
+from apps.users.models import OTPVerifications
+from apps.users.serializers import RequestOTPSerializer, VerifyOTPSerializer
 
 from core.cookies import (
     REFRESH_COOKIE_NAME,
@@ -151,3 +162,79 @@ class MeView(APIView):
         return Response(
             {"username": request.user.username, "role": request.user.role}
         )
+
+
+
+class RequestOTPView(APIView):
+    """POST /api/auth/request-otp/  {"phone_number": "+919876543210"}"""
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        s = RequestOTPSerializer(data=request.data)
+        s.is_valid(raise_exception=True)
+        phone = s.validated_data["phone_number"]
+
+        # Spam roko: 60 second mein dobara nahi
+        existing = OTPVerifications.objects.filter(phone_number=phone).first()
+        if existing and (timezone.now() - existing.created_at).total_seconds() < 60:
+            return Response({"detail": "Thodi der baad dobara try karo."}, status=429)
+
+        otp = f"{secrets.randbelow(1_000_000):06d}"
+        OTPVerifications.objects.update_or_create(
+            phone_number=phone,
+            defaults={"otp_hash": make_password(otp), "attempts": 0, "created_at": timezone.now()},
+        )
+
+        # TODO: SMS gateway (Twilio/MSG91) yahan. Abhi sirf development mein console.
+        if settings.DEBUG:
+            print(f"[DEV] OTP for {phone}: {otp}")
+
+        # Hamesha same response, taaki pata na chale number registered hai ya nahi
+        return Response({"detail": "Agar number sahi hai to OTP bhej diya gaya hai."})
+
+
+class VerifyOTPView(APIView):
+    """POST /api/auth/verify-otp/  {"phone_number": "...", "otp": "123456"}"""
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        s = VerifyOTPSerializer(data=request.data)
+        s.is_valid(raise_exception=True)
+        phone = s.validated_data["phone_number"]
+        otp = s.validated_data["otp"]
+
+        record = OTPVerifications.objects.filter(phone_number=phone).first()
+        bad = Response({"detail": "Invalid ya expired OTP."}, status=400)
+        if record is None or record.is_expired():
+            return bad
+
+        if record.attempts >= OTPVerifications.MAX_ATTEMPTS:
+            record.delete()
+            return Response({"detail": "Bahut zyada galat koshish. Naya OTP maango."}, status=429)
+
+        if not check_password(otp, record.otp_hash):
+            record.attempts += 1
+            record.save(update_fields=["attempts"])
+            return bad
+
+        record.delete()
+
+        # Phone se user dhoondo, nahi hai to naya customer banao (role hamesha default)
+        user = User.objects.filter(phone_number=phone).first()
+        created = False
+        if user is None:
+            user = User(username=f"u_{phone.lstrip('+')}", phone_number=phone, role=User.Role.USER)
+            user.set_unusable_password()
+            user.save()
+            created = True
+
+        if not user.is_active:
+            return Response({"detail": "Account disabled."}, status=403)
+
+        refresh = RefreshToken.for_user(user)
+        response = Response(
+            {"detail": "Login successful.", "username": user.username,
+             "role": user.role, "is_new_user": created}
+        )
+        set_auth_cookies(response, str(refresh.access_token), str(refresh))
+        return response
